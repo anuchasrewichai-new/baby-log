@@ -1,5 +1,5 @@
 // sw.js — แคชตัวแอปให้เปิดได้แม้ออฟไลน์ (ข้อมูลอยู่ใน IndexedDB ไม่ได้อยู่ในแคชนี้)
-const VERSION = 'v1.1.0';
+const VERSION = 'v1.2.0';
 const CACHE = 'baby-log-' + VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
@@ -67,5 +67,15 @@ self.addEventListener('fetch', (e) => {
       if (req.mode === 'navigate') return (await cache.match('./index.html')) || Response.error();
       return Response.error();
     }
+  })());
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const target = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of all) { if ('focus' in c) { await c.focus(); if ('navigate' in c) c.navigate(target); return; } }
+    if (self.clients.openWindow) await self.clients.openWindow(target);
   })());
 });

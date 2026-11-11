@@ -5,7 +5,7 @@ import * as Sync from './sync.js';
 import * as C from './charts.js';
 import * as P from './photos.js';
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 
@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = { babyName: '', birthDate: '', birthWeightKg: '', gesta
 const S = {
   records: [], settings: { ...DEFAULT_SETTINGS }, sum: null, range: 7,
   draft: {}, draftKey: '', confirmDel: false, syncCfg: { url: '', key: '' }, sync: Sync.syncState(),
-  feedTimer: null, installEvt: null, swWaiting: null, histLimit: 14, confirmReset: false
+  feedTimer: null, sleepTimer: null, alerts: [], notify: { enabled: false, sound: true }, installEvt: null, swWaiting: null, histLimit: 14, confirmReset: false
 };
 
 /* ===================== ตัวช่วย ===================== */
@@ -33,6 +33,8 @@ function ago(ms) {
   const h = Math.floor(m / 60);
   return `${h} ชม.${m % 60 ? ` ${m % 60} น.` : ''}`;
 }
+const durText = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} นาที` : `${Math.floor(m / 60)} ชม.${m % 60 ? ` ${m % 60} น.` : ''}`; };
+const hmmss = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`; };
 const mmss = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
 const lvClass = (lv) => (lv === null || lv === undefined ? 'lv-none' : `lv-${lv}`);
 const lvText = (lv) => (lv === null || lv === undefined ? 'ไม่มีข้อมูล' : R.LEVEL_LABEL[lv]);
@@ -59,6 +61,10 @@ const ICON = {
   cloudOff: '<path d="M3 3l18 18M8 8a5 5 0 0 0-1 9.9h10M18.5 13.9A4 4 0 0 0 15 8h-.5"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   camera: '<path d="M4 7h3l2-3h6l2 3h3v13H4z"/><circle cx="12" cy="13" r="4"/>',
+  thermo: '<path d="M14 14.76V4a2 2 0 0 0-4 0v10.76a4 4 0 1 0 4 0z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>'
 };
 const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
@@ -85,6 +91,7 @@ async function saveRecord(rec) {
   if (i >= 0) S.records[i] = rec; else S.records.push(rec);
   recompute();
   scheduleSync();
+  setTimeout(checkAlerts, 50);
 }
 async function saveSettings(patch) {
   S.settings = normSettings({ ...S.settings, ...patch, updatedAt: Date.now() });
@@ -105,7 +112,64 @@ async function runSync() {
     S.settings = normSettings(await db.get('settings'));
     recompute();
     render();
+    checkAlerts();
   }
+}
+
+/* ===================== แจ้งเตือน (Phase 3) ===================== */
+const ALERT_LINK = { feed: '#/log/feed', feed2: '#/log/feed', pee: '#/log/pee', pee8: '#/danger', fever: '#/danger', retemp: '#/log/temp', sleep: '#/log/sleep', test: '#/' };
+let audioCtx = null;
+function unlockAudio() {
+  try { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) { /* ไม่มีเสียง */ }
+}
+function chime(level) {
+  if (!audioCtx) return;
+  const notes = level >= 2 ? [880, 660, 880, 660] : [660, 880];
+  notes.forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime + i * 0.28;
+    o.frequency.value = f; o.type = 'sine';
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t + 0.26);
+  });
+}
+async function fireAlert(a, force = false) {
+  const fired = await db.get('alertsFired', []);
+  if (!force && fired.includes(a.key)) return false;
+  if (!force) { fired.push(a.key); await db.set('alertsFired', fired.slice(-200)); }
+  if (S.notify.sound) { chime(a.level); try { navigator.vibrate && navigator.vibrate(a.level >= 2 ? [300, 150, 300, 150, 300] : [200, 100, 200]); } catch (e) { /* ignore */ } }
+  const name = S.settings.babyName ? ` (${S.settings.babyName})` : '';
+  if (S.notify.enabled && 'Notification' in window && Notification.permission === 'granted') {
+    const opts = { body: a.body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: a.key.split(':')[0], renotify: true, requireInteraction: a.level >= 2, data: { url: './' + (ALERT_LINK[a.key.split(':')[0]] || '#/') } };
+    try {
+      const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+      if (reg && reg.showNotification) await reg.showNotification(a.title + name, opts);
+      else new Notification(a.title + name, opts);
+    } catch (e) { /* แสดงในแอปอย่างเดียว */ }
+  }
+  if (force) toast(a.title);
+  return true;
+}
+async function dismissAlert(key) {
+  const d = await db.get('alertsDismissed', []);
+  if (!d.includes(key)) d.push(key);
+  await db.set('alertsDismissed', d.slice(-200));
+  S.dismissed = d;
+  S.alerts = S.alerts.filter((x) => x.key !== key);
+}
+async function checkAlerts() {
+  const list = R.activeAlerts(S.records, S.settings, Date.now(), { feedTimer: S.feedTimer, sleepTimer: S.sleepTimer });
+  const dismissed = S.dismissed || (S.dismissed = await db.get('alertsDismissed', []));
+  const visible = list.filter((a) => !dismissed.includes(a.key));
+  const changed = visible.map((a) => a.key).join() !== (S.alerts || []).map((a) => a.key).join();
+  S.alerts = visible;
+  for (const a of visible) await fireAlert(a);
+  if (changed && route().parts[0] !== 'log' && route().parts[0] !== 'settings') { const y = window.scrollY; render(); window.scrollTo(0, y); }
+}
+function alertBanners() {
+  if (!S.alerts || !S.alerts.length) return '';
+  return S.alerts.map((a) => `<div class="alert ${lvClass(a.level === 0 ? 1 : a.level)}" role="alert">
+      <a class="alert-main" href="${ALERT_LINK[a.key.split(':')[0]] || '#/'}">${icon('bell')}<span><b>${esc(a.title)}</b><span class="small">${esc(a.body)}</span></span></a>
+      <button type="button" class="alert-x" data-act="alert-dismiss" data-v="${esc(a.key)}" aria-label="รับทราบ">รับทราบ</button></div>`).join('');
 }
 
 /* ===================== Toast ===================== */
@@ -191,8 +255,12 @@ function recordLine(r) {
       ? `นม · เข้าเต้า${r.durL ? ` ซ้าย ${r.durL}` : ''}${r.durR ? ` ขวา ${r.durR}` : ''}${r.durL || r.durR ? ' นาที' : ''}`
       : `นม · ${R.FEED_METHODS[r.method] || 'ขวด'} ${r.amount || 0} มล.`;
   } else if (r.type === 'weight') title = `น้ำหนัก ${Number(r.amount).toFixed(2)} กก.`;
+  else if (r.type === 'temp') { title = `อุณหภูมิ ${Number(r.tempC).toFixed(1)} °C${r.tempSite && R.TEMP_SITES[r.tempSite] ? ' · ' + R.TEMP_SITES[r.tempSite] : ''}`; lv = R.evaluateTemp(r, dol ? dol - 1 : null).level; }
+  else if (r.type === 'jaundice') { title = `ตัวเหลือง · ${R.JAUNDICE_ZONES[Number(r.zone) || 0]}`; lv = R.evaluateJaundice(r, S.settings.birthDate, num(S.settings.gestationWeeks)).level; }
+  else if (r.type === 'sleep') { title = `นอน ${r.endTs ? durText(r.endTs - r.ts) : ''}`; sub = `${hm(r.ts)}–${r.endTs ? hm(r.endTs) : ''}`; }
   else title = r.type;
-  const thumb = img ? `<img src="${img}" alt="" class="thumb">` : `<span class="thumb thumb-ic">${icon(r.type === 'feed' ? 'bottle' : 'scale', 's')}</span>`;
+  const ic = { feed: 'bottle', weight: 'scale', temp: 'thermo', jaundice: 'sun', sleep: 'moon' }[r.type] || 'scale';
+  const thumb = img ? `<img src="${img}" alt="" class="thumb">` : `<span class="thumb thumb-ic thumb-${r.type}">${icon(ic, 's')}</span>`;
   const chip = lv !== null && lv !== undefined ? `<span class="lvchip ${lvClass(lv)}">${lvText(lv)}</span>` : '';
   return `<a class="row" href="#/log/${r.type}?id=${encodeURIComponent(r.id)}">${thumb}<span class="row-main"><span class="row-title">${esc(title)}</span><span class="row-sub">${sub}${r.photoId ? ' · มีรูป' : ''}${r.note ? ' · ' + esc(r.note) : ''}${r._dirty && S.syncCfg.url ? ' · รอซิงก์' : ''}</span></span>${chip}</a>`;
 }
@@ -237,22 +305,30 @@ function viewHome() {
   const timer = S.feedTimer && feedTimerRunning(S.feedTimer)
     ? `<a class="banner" href="#/log/feed">${icon('bottle')}<span>กำลังให้นม · <b data-tick="feed-total"></b> · แตะเพื่อจบมื้อ</span></a>` : '';
   const lastW = s.weight.latest;
-  const recent = live().filter((r) => ['pee', 'poop', 'feed', 'weight'].includes(r.type)).sort((a, b) => b.ts - a.ts).slice(0, 6);
+  const recent = live().sort((a, b) => b.ts - a.ts).slice(0, 6);
+  const today2 = s.days.find((d) => d.isToday) || {};
+  const lastT = live().filter((r) => r.type === 'temp').sort((a, b) => b.ts - a.ts)[0];
+  const lastJ = live().filter((r) => r.type === 'jaundice').sort((a, b) => b.ts - a.ts)[0];
   return `<main class="page">
     <header class="home-head"><div><div class="muted small">${esc(ageText())}${ftLabel ? ' · ' + ftLabel : ''}</div><h1>${esc(name)}</h1></div>${syncChip()}</header>
     ${S.swWaiting ? `<button type="button" class="banner banner-info" data-act="sw-update">มีเวอร์ชันใหม่ แตะเพื่ออัปเดต</button>` : ''}
+    ${alertBanners()}
     ${status}${timer}
+    ${S.sleepTimer ? `<a class="banner banner-sleep" href="#/log/sleep">${icon('moon')}<span>ลูกกำลังนอน · <b data-tick="sleep-run"></b> · แตะเมื่อตื่น</span></a>` : ''}
     <section class="grid2">
       <div class="card tile"><div class="muted small">นมมื้อล่าสุด</div><div class="big" data-tick="feed-ago">—</div><div class="bar"><div data-tick="feed-bar"></div></div><div class="small" data-tick="feed-next"></div></div>
       <div class="card tile"><div class="muted small">ฉี่ล่าสุด</div><div class="big" data-tick="pee-ago">—</div><div class="bar"><div data-tick="pee-bar" class="bar-ok"></div></div><div class="small muted">เตือนถ้าเกิน ${S.settings.peeAlertH} ชม.</div></div>
     </section>
     <h2 class="sec">บันทึกด่วน</h2>
-    <section class="quick">
+    <section class="quick quick-3">
       <a class="qbtn" href="#/log/pee"><span class="qic qic-pee">${icon('drop')}</span><span class="qlabel">ฉี่</span><span class="qsub">วันนี้ ${today.wet}${s.dolToday ? ' / ' + R.expectedWet(s.dolToday) : ''}</span></a>
       <a class="qbtn" href="#/log/poop"><span class="qic qic-poop">${icon('diaper')}</span><span class="qlabel">อึ</span><span class="qsub">วันนี้ ${today.stool}${s.dolToday && R.expectedStool(s.dolToday, S.settings.feedingType) ? ' / ' + R.expectedStool(s.dolToday, S.settings.feedingType) : ''}</span></a>
       <a class="qbtn" href="#/log/feed"><span class="qic qic-feed">${icon('bottle')}</span><span class="qlabel">นม</span><span class="qsub">วันนี้ ${today.feeds} มื้อ</span></a>
-      <a class="qbtn" href="#/log/weight"><span class="qic qic-weight">${icon('scale')}</span><span class="qlabel">น้ำหนัก</span><span class="qsub">${lastW ? Number(lastW.amount).toFixed(2) + ' กก.' : 'ยังไม่มี'}</span></a>
+      <a class="qbtn" href="#/log/temp"><span class="qic qic-temp">${icon('thermo')}</span><span class="qlabel">อุณหภูมิ</span><span class="qsub">${lastT ? Number(lastT.tempC).toFixed(1) + ' °C' : 'ยังไม่มี'}</span></a>
+      <a class="qbtn" href="#/log/jaundice"><span class="qic qic-pee">${icon('sun')}</span><span class="qlabel">ตัวเหลือง</span><span class="qsub">${lastJ ? 'ระดับ ' + (Number(lastJ.zone) || 0) : 'ยังไม่มี'}</span></a>
+      <a class="qbtn" href="#/log/sleep"><span class="qic qic-weight">${icon('moon')}</span><span class="qlabel">นอน</span><span class="qsub" data-tick="sleep-sub">${today2.sleepMin ? durText(today2.sleepMin * 60000) : 'วันนี้ —'}</span></a>
     </section>
+    <a class="qrow" href="#/log/weight"><span class="qic qic-weight">${icon('scale')}</span><span class="qlabel">น้ำหนัก</span><span class="qsub">${lastW ? Number(lastW.amount).toFixed(2) + ' กก.' + (s.weight.lossPct !== null ? ` (${s.weight.lossPct > 0 ? '−' : '+'}${Math.abs(s.weight.lossPct)}%)` : '') : 'ยังไม่มีบันทึก'}</span></a>
     <h2 class="sec">ล่าสุด</h2>
     <section class="card list">${recent.length ? recent.map(recordLine).join('') : '<p class="empty">ยังไม่มีบันทึก</p>'}</section>
     <a class="danger-link" href="#/danger">${icon('alert')}อาการอันตรายที่ต้องไปโรงพยาบาลทันที</a>
@@ -281,15 +357,19 @@ function loadDraft(type, id) {
       Object.assign(base, { method: lastF && lastF.method ? lastF.method : (S.settings.feedingType === 'formula' ? 'formula' : 'breast'), amount: lastF && lastF.amount ? lastF.amount : '', durL: '', durR: '' });
     }
     if (type === 'weight') { const lw = S.sum.weight.latest; Object.assign(base, { amount: lw ? lw.amount : S.settings.birthWeightKg || '' }); }
+    const lastOf = (t) => live().filter((r) => r.type === t).sort((a, b) => b.ts - a.ts)[0];
+    if (type === 'temp') { const lt = lastOf('temp'); Object.assign(base, { tempC: lt ? Number(lt.tempC) : 36.8, tempSite: lt && lt.tempSite ? lt.tempSite : 'axilla' }); }
+    if (type === 'jaundice') { const lj = lastOf('jaundice'); Object.assign(base, { zone: lj ? Number(lj.zone) || 0 : 0 }); }
+    if (type === 'sleep') Object.assign(base, { ts: Date.now() - 2 * 3600000, endTs: Date.now() });
     S.draft = base;
   }
   return S.draft;
 }
 
 function viewLog(type, id) {
-  if (!['pee', 'poop', 'feed', 'weight'].includes(type)) return viewHome();
+  if (!['pee', 'poop', 'feed', 'weight', 'temp', 'jaundice', 'sleep'].includes(type)) return viewHome();
   const d = loadDraft(type, id);
-  const titles = { pee: 'บันทึกฉี่', poop: 'บันทึกอึ', feed: 'บันทึกนม', weight: 'บันทึกน้ำหนัก' };
+  const titles = { pee: 'บันทึกฉี่', poop: 'บันทึกอึ', feed: 'บันทึกนม', weight: 'บันทึกน้ำหนัก', temp: 'บันทึกอุณหภูมิ', jaundice: 'บันทึกตัวเหลือง', sleep: 'บันทึกการนอน' };
   const editing = !!id;
   const time = `<label class="timefield">${icon('clock', 's')}<span class="sr">เวลา</span><input type="datetime-local" name="ts" value="${toLocalInput(d.ts)}" data-bind="ts"></label>`;
   let body = '';
@@ -297,6 +377,9 @@ function viewLog(type, id) {
   if (type === 'pee') body = peeBody(d);
   if (type === 'feed') body = feedBody(d, editing);
   if (type === 'weight') body = weightBody(d);
+  if (type === 'temp') body = tempBody(d);
+  if (type === 'jaundice') body = jaundiceBody(d);
+  if (type === 'sleep') return sleepView(d, editing, titles);
   const del = editing ? `<button type="button" class="btn btn-danger-outline" data-act="delete">${icon('trash', 's')}${S.confirmDel ? 'แตะอีกครั้งเพื่อยืนยันลบ' : 'ลบรายการนี้'}</button>` : '';
   return `<main class="page page-form">
     ${topbar(editing ? 'แก้ไข' + titles[type].replace('บันทึก', '') : titles[type], editing ? '#/history' : '#/')}
@@ -411,6 +494,73 @@ function weightBody(d) {
     <p class="hint pad">ชั่งด้วยเครื่องชั่งเดิมทุกครั้ง ตอนไม่ใส่ผ้าอ้อม จะเทียบกันได้แม่นที่สุด</p>`;
 }
 
+/* ---------- อุณหภูมิ ---------- */
+function tempBody(d) {
+  const t = num(d.tempC) ?? 36.8;
+  const dol = R.dayOfLife(S.settings.birthDate, R.localDate(d.ts));
+  const ev = R.evaluateTemp({ tempC: t }, dol ? dol - 1 : null);
+  const pos = Math.max(0, Math.min(100, ((t - 35.5) / (39 - 35.5)) * 100));
+  const sites = Object.entries(R.TEMP_SITES).map(([k, l]) => `<button type="button" class="pill ${d.tempSite === k ? 'on' : ''}" data-act="pick-site" data-v="${k}" aria-pressed="${d.tempSite === k}">${l}</button>`).join('');
+  return `<div class="pills pad center">${sites}</div>
+    <div class="amount pad"><button type="button" class="round" data-act="tmp" data-v="-0.1" aria-label="ลด 0.1 องศา">−</button>
+      <label class="amt-val"><input type="number" inputmode="decimal" step="0.1" min="30" max="43" value="${t.toFixed(1)}" data-bind="tempC" aria-label="อุณหภูมิ องศาเซลเซียส"><span>°C</span></label>
+      <button type="button" class="round" data-act="tmp" data-v="0.1" aria-label="เพิ่ม 0.1 องศา">+</button></div>
+    <div class="pad"><div class="tscale" aria-hidden="true"><i style="flex:5" class="ts-cold"></i><i style="flex:5" class="ts-watch"></i><i style="flex:10" class="ts-ok"></i><i style="flex:4" class="ts-watch"></i><i style="flex:11" class="ts-hot"></i><b style="left:${pos}%"></b></div>
+    <div class="tscale-lbl small muted"><span style="left:${((36 - 35.5) / 3.5) * 100}%">36.0</span><span style="left:${((36.5 - 35.5) / 3.5) * 100}%">36.5</span><span style="left:${((37.5 - 35.5) / 3.5) * 100}%">37.5</span><span style="left:${((38 - 35.5) / 3.5) * 100}%">38.0</span></div></div>
+    <section class="result ${lvClass(ev.level)}"><div class="result-title">${ev.level === 0 ? 'ปกติ (36.5–37.5 °C)' : lvText(ev.level)}</div>${msgList(ev.msgs)}</section>
+    <p class="hint pad">วัดรักแร้: หนีบปรอทให้แนบผิว 1–3 นาทีตามชนิดปรอท · ทารกต่ำกว่า 3 เดือน ถ้าถึง 38.0 °C ให้ไปโรงพยาบาลทันที ไม่ต้องรอดูอาการ</p>`;
+}
+
+/* ---------- ตัวเหลือง ---------- */
+function jaundiceBody(d) {
+  const z = Number(d.zone) || 0;
+  const fill = (n) => (z >= n && z > 0 ? 'jz-on' : 'jz-off');
+  const part = (n, shape) => shape.replace('class="Z"', `class="jz ${fill(n)}" data-act="pick-zone" data-v="${n}"`);
+  const svg = `<svg viewBox="0 0 120 210" class="body-map" role="img" aria-label="แผนภาพร่างกาย แตะบริเวณที่เหลืองลามไปถึง ตอนนี้ระดับ ${z}">
+    ${part(4, '<rect class="Z" x="14" y="62" width="18" height="56" rx="9"/>')}${part(4, '<rect class="Z" x="88" y="62" width="18" height="56" rx="9"/>')}
+    ${part(4, '<rect class="Z" x="40" y="152" width="18" height="34" rx="8"/>')}${part(4, '<rect class="Z" x="62" y="152" width="18" height="34" rx="8"/>')}
+    ${part(3, '<rect class="Z" x="38" y="92" width="44" height="30" rx="8"/>')}${part(3, '<rect class="Z" x="40" y="120" width="18" height="34" rx="8"/>')}${part(3, '<rect class="Z" x="62" y="120" width="18" height="34" rx="8"/>')}
+    ${part(2, '<rect class="Z" x="36" y="56" width="48" height="38" rx="12"/>')}
+    ${part(1, '<circle class="Z" cx="60" cy="30" r="24"/>')}
+    ${part(5, '<circle class="Z" cx="23" cy="124" r="8"/>')}${part(5, '<circle class="Z" cx="97" cy="124" r="8"/>')}
+    ${part(5, '<ellipse class="Z" cx="49" cy="194" rx="11" ry="7"/>')}${part(5, '<ellipse class="Z" cx="71" cy="194" rx="11" ry="7"/>')}
+  </svg>`;
+  const ev = R.evaluateJaundice({ ...d, zone: z }, S.settings.birthDate, num(S.settings.gestationWeeks),
+    live().some((r) => r.type === 'poop' && ['s01', 's02', 's03'].includes(r.color) && Date.now() - r.ts < 3 * 86400000));
+  const lv = (n) => R.evaluateJaundice({ ts: d.ts, zone: n }, S.settings.birthDate, num(S.settings.gestationWeeks)).level;
+  const list = R.JAUNDICE_ZONES.map((l, n) => `<button type="button" class="zbtn ${z === n ? 'on ' + lvClass(lv(n)) : ''}" data-act="pick-zone" data-v="${n}" aria-pressed="${z === n}"><b>${n}</b> ${l}</button>`).join('');
+  return `<p class="hint pad">ในแสงธรรมชาติ ใช้นิ้วกดผิวเบา ๆ แล้วปล่อย ดูว่าผิวตรงนั้นยังเหลืองไหม ไล่จากหัวลงมาเท้า แล้วแตะส่วนที่ต่ำที่สุดที่ยังเหลือง</p>
+    <div class="jaundice pad">${svg}<div class="zlist">${list}</div></div>
+    ${z > 0 || ev.msgs.length ? `<section class="result ${lvClass(ev.level)}"><div class="result-title">ระดับ ${z} — ${lvText(ev.level)}</div>${msgList(ev.msgs)}</section>` : `<section class="result lv-0"><div class="result-title">ไม่เหลือง</div></section>`}
+    <p class="hint pad">การดูด้วยตาเป็นการคัดกรองเบื้องต้นเท่านั้น ค่าที่แม่นยำต้องเจาะเลือดหรือใช้เครื่องวัดที่โรงพยาบาล</p>`;
+}
+
+/* ---------- การนอน ---------- */
+function sleepView(d, editing, titles) {
+  const t = S.sleepTimer;
+  const top = topbar(editing ? 'แก้ไขการนอน' : titles.sleep, editing ? '#/history' : '#/');
+  const manual = `<div class="pad"><div class="field-row">
+      <label class="field"><span>เริ่มนอน</span><input type="datetime-local" value="${toLocalInput(d.ts)}" data-bind="ts"></label>
+      <label class="field"><span>ตื่น</span><input type="datetime-local" value="${toLocalInput(d.endTs || Date.now())}" data-bind="endTs"></label></div>
+      ${d.endTs > d.ts ? `<p class="small muted center">รวม ${durText(d.endTs - d.ts)}</p>` : '<p class="small txt-2 center">เวลาตื่นต้องหลังเวลาเริ่มนอน</p>'}</div>`;
+  if (editing) {
+    return `<main class="page page-form">${top}${manual}
+      <div class="pad"><label class="field"><span>หมายเหตุ (ไม่บังคับ)</span><input value="${esc(d.note)}" maxlength="200" data-bind="note"></label></div>
+      <div class="pad"><button type="button" class="btn btn-danger-outline" data-act="delete">${icon('trash', 's')}${S.confirmDel ? 'แตะอีกครั้งเพื่อยืนยันลบ' : 'ลบรายการนี้'}</button></div></main>
+      <footer class="savebar"><button type="button" class="btn btn-primary btn-block" data-act="save">บันทึก</button></footer>`;
+  }
+  const dol = S.sum.dolToday;
+  const big = t
+    ? `<button type="button" class="sleep-btn run" data-act="sleep-stop"><span class="t-side">กำลังนอน ตั้งแต่ ${hm(t.startTs)}</span><span class="t-time" data-tick="sleep-big">0:00:00</span><span class="t-hint">${icon('check', 's')}แตะเมื่อลูกตื่น</span></button>`
+    : `<button type="button" class="sleep-btn" data-act="sleep-start"><span class="t-time">${icon('moon')}</span><span class="t-side">แตะเมื่อลูกเริ่มนอน</span><span class="t-hint">แอปจะนับเวลาให้ ปิดแอปได้</span></button>`;
+  return `<main class="page page-form">${top}
+    <div class="pad">${big}</div>
+    ${t ? `<p class="center small"><button type="button" class="link" data-act="sleep-cancel">ยกเลิก (กดผิด)</button></p>` : ''}
+    <section class="card pad-in pad-m small muted">ทารก 0–3 เดือนนอนรวมประมาณ 14–17 ชม./วัน${R.needsWakeForFeeds(dol, null) ? ' · ช่วงนี้ถ้านอนเกิน 4 ชม. ควรปลุกให้นม แอปจะเตือนให้' : ''}</section>
+    ${t ? '' : `<details class="pad manual" ${d._manual ? 'open' : ''}><summary>ลืมกด? บันทึกย้อนหลัง</summary>${manual.replace('<div class="pad">', '<div>')}<button type="button" class="btn btn-primary btn-block" data-act="save">บันทึกย้อนหลัง</button></details>`}
+  </main>`;
+}
+
 /* ===================== แดชบอร์ด ===================== */
 function viewDash() {
   const s = S.sum, o = s.overall;
@@ -443,15 +593,20 @@ function viewDash() {
     ${hasBottle ? `<section class="card chart-card"><div class="chart-head"><h2>นมขวดรวม (มล.)</h2><span class="legend"><i class="lg-min"></i>ขั้นต่ำตามแนวทาง</span></div>
       ${C.bars({ labels, values: days.map((d) => d.bottleMl), mins: days.map((d) => (S.settings.feedingType === 'formula' ? d.guide.dailyMin : null)), color: 'var(--accent)', label: 'ปริมาณนมขวดต่อวัน' })}</section>` : ''}
     ${wPts.length && num(S.settings.birthWeightKg) ? `<section class="card chart-card"><div class="chart-head"><h2>น้ำหนัก (กก.)</h2></div>${C.weight({ points: wPts, birthKg: num(S.settings.birthWeightKg), label: 'น้ำหนักเทียบแรกเกิด' })}</section>` : ''}
+    ${days.some((d) => d.maxTemp !== null) ? `<section class="card chart-card"><div class="chart-head"><h2>อุณหภูมิสูงสุดต่อวัน (°C)</h2><span class="legend"><i class="lg-h"></i>38.0</span></div>
+      ${C.temps({ labels, values: days.map((d) => d.maxTemp), label: 'อุณหภูมิสูงสุดต่อวัน' })}</section>` : ''}
+    ${days.some((d) => d.sleepMin) ? `<section class="card chart-card"><div class="chart-head"><h2>นอนรวมต่อวัน (ชม.)</h2><span class="legend"><i class="lg-h"></i>14 ชม.</span></div>
+      ${C.bars({ labels, values: days.map((d) => (d.sleepMin ? Math.round(d.sleepMin / 6) / 10 : null)), hline: 14, color: '#7A73C9', label: 'ชั่วโมงนอนต่อวัน' })}
+      <p class="small muted">นับเฉพาะช่วงที่บันทึก ถ้าไม่ได้บันทึกทุกครั้ง ตัวเลขจะต่ำกว่าจริง</p></section>` : ''}
     <h2 class="sec">สรุปรายวัน</h2>
-    <section class="card list">${[...days].reverse().map((d) => `<details class="day"><summary><span class="day-date">${d.isToday ? 'วันนี้' : dateTh(d.date)}${d.dol ? ` <span class="muted small">วันที่ ${d.dol}</span>` : ''}</span><span class="day-nums">ฉี่ ${d.wet} · อึ ${d.stool} · นม ${d.feeds}</span><span class="lvchip ${lvClass(d.isToday && d.level === 0 ? null : d.level)}">${d.isToday ? (d.level > 0 ? lvText(d.level) : 'ยังไม่ครบวัน') : lvText(d.level)}</span></summary>${msgList(d.msgs) || '<p class="small muted">ครบเกณฑ์</p>'}${d.bottleMl ? `<p class="small muted">นมขวด ${d.bottleMl} มล.</p>` : ''}${d.breastMin ? `<p class="small muted">เข้าเต้ารวม ${d.breastMin} นาที</p>` : ''}</details>`).join('')}</section>
+    <section class="card list">${[...days].reverse().map((d) => `<details class="day"><summary><span class="day-date">${d.isToday ? 'วันนี้' : dateTh(d.date)}${d.dol ? ` <span class="muted small">วันที่ ${d.dol}</span>` : ''}</span><span class="day-nums">ฉี่ ${d.wet} · อึ ${d.stool} · นม ${d.feeds}</span><span class="lvchip ${lvClass(d.isToday && d.level === 0 ? null : d.level)}">${d.isToday ? (d.level > 0 ? lvText(d.level) : 'ยังไม่ครบวัน') : lvText(d.level)}</span></summary>${msgList(d.msgs) || '<p class="small muted">ครบเกณฑ์</p>'}${d.bottleMl ? `<p class="small muted">นมขวด ${d.bottleMl} มล.</p>` : ''}${d.breastMin ? `<p class="small muted">เข้าเต้ารวม ${d.breastMin} นาที</p>` : ''}${d.maxTemp !== null ? `<p class="small muted">อุณหภูมิสูงสุด ${d.maxTemp.toFixed(1)} °C</p>` : ''}${d.maxZone !== null ? `<p class="small muted">ตัวเหลืองสูงสุด ระดับ ${d.maxZone}</p>` : ''}${d.sleepMin ? `<p class="small muted">นอนรวม ${durText(d.sleepMin * 60000)}</p>` : ''}</details>`).join('')}</section>
     <p class="disclaimer">ประเมินตามแนวทางทั่วไป ไม่ใช่การวินิจฉัย · วันนี้ยังไม่ครบ 24 ชม. จึงประเมินเฉพาะสีและลักษณะ</p>
   </main>${nav('dash')}`;
 }
 
 /* ===================== ประวัติ ===================== */
 function viewHistory() {
-  const recs = live().filter((r) => ['pee', 'poop', 'feed', 'weight'].includes(r.type)).sort((a, b) => b.ts - a.ts);
+  const recs = live().sort((a, b) => b.ts - a.ts);
   const groups = new Map();
   for (const r of recs) { const d = R.localDate(r.ts); if (!groups.has(d)) groups.set(d, []); groups.get(d).push(r); }
   const keys = [...groups.keys()];
@@ -484,6 +639,13 @@ function viewSettings() {
         <div class="btn-row"><button class="btn btn-primary" type="submit">เชื่อมต่อและซิงก์</button>${cfg.url ? '<button type="button" class="btn" data-act="sync">ซิงก์ตอนนี้</button>' : ''}</div>
       </form>
       <p class="small ${st.status === 'error' ? 'txt-2' : 'muted'}">${st.status === 'error' ? esc(st.error) : st.lastAt ? `ซิงก์ล่าสุด ${hm(st.lastAt)} · รอส่ง ${st.pending} รายการ` : cfg.url ? 'ยังไม่เคยซิงก์' : 'ยังไม่ได้ตั้งค่า'}</p>
+    </section>
+
+    <section class="card form" id="notify"><h2 class="card-title">การแจ้งเตือน</h2>
+      <label class="toggle"><span>แจ้งเตือนบนหน้าจอ<span class="small muted">ถึงเวลาให้นม · ไม่มีฉี่นาน · วัดไข้ซ้ำ · นอนนาน · มีไข้</span></span><input type="checkbox" data-act="notify-toggle" ${S.notify.enabled ? 'checked' : ''}></label>
+      <label class="toggle"><span>เสียงและสั่น</span><input type="checkbox" data-act="notify-sound" ${S.notify.sound ? 'checked' : ''}></label>
+      <button type="button" class="btn" data-act="notify-test">${icon('bell', 's')}ทดสอบแจ้งเตือน</button>
+      <p class="small muted">เตือนได้แน่นอนเมื่อแอปเปิดอยู่หรือเพิ่งพับไว้ ถ้าปิดแอปหรือล็อกจอนาน มือถืออาจไม่เตือน — ช่วงกลางคืนแนะนำให้เปิดแอปค้างไว้ หรือตั้งนาฬิกาปลุกสำรอง · ตั้งค่าแยกกันในแต่ละเครื่อง</p>
     </section>
 
     ${photoSettings()}
@@ -537,6 +699,10 @@ function tick() {
     const p = lp ? Math.min(1, (now - lp.ts) / pa) : 0;
     el.style.width = `${p * 100}%`; el.className = p >= 1 ? 'bar-warn' : 'bar-ok';
   });
+  if (S.sleepTimer) {
+    const el = now - S.sleepTimer.startTs;
+    set('sleep-run', durText(el)); set('sleep-big', hmmss(el)); set('sleep-sub', `กำลังนอน ${durText(el)}`);
+  }
   const t = S.feedTimer;
   if (t) {
     set('side-L', mmss(sideMs(t, 'L'))); set('side-R', mmss(sideMs(t, 'R')));
@@ -595,6 +761,33 @@ const actions = {
   },
   async install() { if (S.installEvt) { S.installEvt.prompt(); await S.installEvt.userChoice; S.installEvt = null; render(); } },
   'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); },
+  'pick-site'(el) { S.draft.tempSite = el.dataset.v; render(); },
+  tmp(el) { S.draft.tempC = Math.round(((num(S.draft.tempC) ?? 36.8) + Number(el.dataset.v)) * 10) / 10; render(); },
+  'pick-zone'(el) { S.draft.zone = Number(el.dataset.v); render(); },
+  async 'sleep-start'() { S.sleepTimer = { startTs: Date.now() }; await db.set('sleepTimer', S.sleepTimer); toast('เริ่มนับเวลานอนแล้ว'); go('#/'); },
+  async 'sleep-cancel'() { S.sleepTimer = null; await db.set('sleepTimer', null); render(); },
+  async 'sleep-stop'() {
+    const t = S.sleepTimer; if (!t) return;
+    const rec = { id: uid(), type: 'sleep', ts: t.startTs, endTs: Date.now(), note: '' };
+    S.sleepTimer = null; await db.set('sleepTimer', null);
+    await saveRecord(rec);
+    toast(`บันทึกการนอน ${durText(rec.endTs - rec.ts)}`, { label: 'เลิกทำ', fn: async () => { await saveRecord({ ...rec, deleted: true }); S.sleepTimer = t; await db.set('sleepTimer', t); render(); } });
+    S.draftKey = ''; go('#/');
+  },
+  async 'notify-toggle'() {
+    if (!S.notify.enabled) {
+      if (!('Notification' in window)) { toast('เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน (จะเตือนในแอปแทน)'); S.notify.enabled = true; }
+      else {
+        const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+        if (perm !== 'granted') { toast('ไม่ได้รับอนุญาต — เปิดได้ที่ การตั้งค่าเว็บไซต์ของเบราว์เซอร์'); }
+        S.notify.enabled = perm === 'granted';
+      }
+    } else S.notify.enabled = false;
+    await db.set('notifyPrefs', S.notify); render();
+  },
+  async 'notify-sound'() { S.notify.sound = !S.notify.sound; await db.set('notifyPrefs', S.notify); render(); },
+  async 'notify-test'() { unlockAudio(); await fireAlert({ key: 'test:' + Date.now(), level: 0, title: 'ทดสอบแจ้งเตือน', body: 'ถ้าเห็นข้อความนี้ การแจ้งเตือนใช้ได้แล้ว' }, true); },
+  async 'alert-dismiss'(el) { await dismissAlert(el.dataset.v); render(); },
   'photo-view'() { const u = P.cachedUrl(S.draft.photoId); if (u) { S.viewer = u; render(); } },
   'viewer-close'() { S.viewer = null; render(); },
   'photo-remove'() {
@@ -617,12 +810,14 @@ const actions = {
 };
 
 async function loadPhotoInfo() {
+  // อัปเดตเฉพาะการ์ดรูป ไม่วาดทั้งหน้าใหม่ (กันฟอร์มอื่นที่กำลังกรอก/เลือกไฟล์หาย)
+  const patch = () => { const el = document.getElementById('photos'); if (el && route().parts[0] === 'settings') el.outerHTML = photoSettings(); };
   S.photoInfo = { local: await P.localStats(), remote: null, loading: !!S.syncCfg.url };
-  if (route().parts[0] === 'settings') render();
+  patch();
   if (!S.syncCfg.url) return;
   try { S.photoInfo.remote = await Sync.api('photoStats', {}, 20000); } catch (e) { S.photoInfo.error = e.message; }
   S.photoInfo.loading = false;
-  if (route().parts[0] === 'settings') { const y = window.scrollY; render(); window.scrollTo(0, y); }
+  patch();
 }
 const mb = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB');
 function photoSettings() {
@@ -671,9 +866,20 @@ async function saveDraft() {
     rec.amount = num(rec.amount);
     if (!rec.amount || rec.amount < 0.5 || rec.amount > 20) { toast('น้ำหนักไม่ถูกต้อง'); return; }
   }
+  if (type === 'temp') {
+    rec.tempC = num(rec.tempC);
+    if (!rec.tempC || rec.tempC < 30 || rec.tempC > 43) { toast('อุณหภูมิไม่ถูกต้อง (30–43 °C)'); return; }
+    rec.tempC = Math.round(rec.tempC * 10) / 10;
+  }
+  if (type === 'jaundice') rec.zone = Math.max(0, Math.min(5, Number(rec.zone) || 0));
+  if (type === 'sleep') {
+    rec.endTs = Number(rec.endTs);
+    if (!(rec.endTs > rec.ts)) { toast('เวลาตื่นต้องหลังเวลาเริ่มนอน'); return; }
+    if (rec.endTs > Date.now() + 5 * 60000) { toast('เวลาตื่นอยู่ในอนาคต'); return; }
+  }
   rec.note = String(rec.note || '').slice(0, 200);
   const newPhoto = rec.newPhoto, removed = rec.removedPhotoId;
-  delete rec.newPhoto; delete rec.removedPhotoId;
+  delete rec.newPhoto; delete rec.removedPhotoId; delete rec._manual;
   if (newPhoto && rec.photoId === newPhoto.id) {
     await P.savePhoto({ id: newPhoto.id, recordId: rec.id, blob: newPhoto.blob, ts: rec.ts, keep: P.shouldKeep(rec, S.settings.birthDate) });
   }
@@ -681,7 +887,8 @@ async function saveDraft() {
   if (!rec.photoId) rec.photoId = '';
   await saveRecord(rec);
   S.draftKey = '';
-  const lv = type === 'poop' ? R.evaluateStool(rec, R.dayOfLife(S.settings.birthDate, R.localDate(rec.ts))).level : 0;
+  const dolRec = R.dayOfLife(S.settings.birthDate, R.localDate(rec.ts));
+  const lv = type === 'poop' ? R.evaluateStool(rec, dolRec).level : type === 'temp' ? R.evaluateTemp(rec, dolRec ? dolRec - 1 : null).level : type === 'jaundice' ? R.evaluateJaundice(rec, S.settings.birthDate, num(S.settings.gestationWeeks)).level : 0;
   if (!id) toast(lv >= 2 ? 'บันทึกแล้ว — ดูคำแนะนำในหน้าหลัก' : 'บันทึกแล้ว', { label: 'เลิกทำ', fn: async () => { await saveRecord({ ...rec, deleted: true }); render(); } });
   else toast('แก้ไขแล้ว');
   go(id ? '#/history' : '#/');
@@ -694,6 +901,7 @@ function readForm(form) {
 }
 
 /* ===================== ผูกเหตุการณ์ ===================== */
+document.addEventListener('pointerdown', unlockAudio, { once: true });
 document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-act]');
   if (!el || el.tagName === 'INPUT') return;
@@ -704,8 +912,9 @@ document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (el.dataset && el.dataset.bind) {
     const k = el.dataset.bind;
-    S.draft[k] = k === 'ts' ? fromLocalInput(el.value) : el.value;
-    if (k === 'ts' || (k === 'amount' && route().parts[1] === 'weight')) { clearTimeout(S.reTimer); S.reTimer = setTimeout(() => { const pos = el.selectionStart; render(); const n = $app.querySelector(`[data-bind="${k}"]`); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } } }, 600); }
+    S.draft[k] = k === 'ts' || k === 'endTs' ? fromLocalInput(el.value) : el.value;
+    if (k === 'ts' || k === 'endTs') S.draft._manual = true;
+    if (k === 'ts' || k === 'endTs' || k === 'tempC' || (k === 'amount' && route().parts[1] === 'weight')) { clearTimeout(S.reTimer); S.reTimer = setTimeout(() => { const pos = el.selectionStart; render(); const n = $app.querySelector(`[data-bind="${k}"]`); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { /* ignore */ } } }, 600); }
   }
   if (el.form && el.form.dataset.form && el.name) S.draft[el.name] = el.value;
 });
@@ -724,6 +933,7 @@ document.addEventListener('change', async (ev) => {
     } catch (e) { toast(e.message || 'เปิดรูปไม่ได้'); }
     return;
   }
+  if (el.type === 'checkbox' && (el.dataset.act === 'notify-toggle' || el.dataset.act === 'notify-sound')) { unlockAudio(); await actions[el.dataset.act](el, ev); return; }
   if (el.form && el.form.dataset.form === 'photoprefs') {
     await saveSettings({ [el.name]: el.name === 'photoRetentionDays' ? Number(el.value) : el.value });
     toast('บันทึกแล้ว');
@@ -739,7 +949,7 @@ document.addEventListener('change', async (ev) => {
       await db.putMany(incoming);
       if (!S.settings.birthDate && data.settings) await saveSettings(data.settings);
       S.records = await db.allRecords(); recompute(); scheduleSync();
-      toast(`นำเข้า ${incoming.length} รายการ`); render();
+      toast(`นำเข้า ${incoming.length} รายการ`); render(); checkAlerts();
     } catch (e) { toast('ไฟล์ไม่ถูกต้อง'); }
   }
 });
@@ -774,7 +984,7 @@ document.addEventListener('submit', async (ev) => {
   }
 });
 
-window.addEventListener('hashchange', () => { S.viewer = null; if (route().parts[0] === 'settings') loadPhotoInfo(); if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
+window.addEventListener('hashchange', () => { S.viewer = null; setTimeout(checkAlerts, 0); if (route().parts[0] === 'settings') loadPhotoInfo(); if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
 window.addEventListener('online', () => scheduleSync(300));
 window.addEventListener('offline', () => { S.sync = { ...S.sync, status: 'offline' }; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { recompute(); if (route().parts[0] !== 'log') render(); scheduleSync(500); } });
@@ -795,12 +1005,17 @@ async function init() {
   S.settings = normSettings(await db.get('settings'));
   S.syncCfg = await Sync.getConfig();
   S.feedTimer = await db.get('feedTimer');
+  S.sleepTimer = await db.get('sleepTimer');
+  S.notify = await db.get('notifyPrefs', { enabled: false, sound: true });
+  if (S.notify.enabled && 'Notification' in window && Notification.permission !== 'granted') S.notify.enabled = false;
   S.sync = { ...S.sync, pending: await Sync.countPending(), lastAt: await db.get('lastSyncAt') };
   if (S.settings.birthDate) S.onboardSkipped = true;
   recompute();
   render();
   db.persist();
   P.pruneLocal(S.settings, S.records).catch(() => {});
+  checkAlerts();
+  setInterval(checkAlerts, 30000);
   if (route().parts[0] === 'settings') loadPhotoInfo();
   scheduleSync(800);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {

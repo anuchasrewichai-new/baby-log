@@ -70,3 +70,27 @@ export function weight({ points, birthKg, label = '' }) {
   ticks.forEach((d, i) => { const anchor = i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'; g += `<text x="${X(d)}" y="${H - 6}" class="lbl" style="text-anchor:${anchor}">วันที่ ${d}</text>`; });
   return frame(H, g, label);
 }
+
+/** อุณหภูมิสูงสุดต่อวัน: จุด + แถบ ปกติ/สูง/ไข้ */
+export function temps({ labels, values, label = '' }) {
+  const H = 150, top = 12, bottom = 22, left = 30, right = 6;
+  const lo = 35.5, hi = 39.5, plotH = H - top - bottom, n = labels.length;
+  const slot = (W - left - right) / n;
+  const Y = (t) => top + ((hi - Math.max(lo, Math.min(hi, t))) / (hi - lo)) * plotH;
+  let g = `<rect x="${left}" y="${Y(39.5)}" width="${W - left - right}" height="${Y(38) - Y(39.5)}" class="band-doc"/>`;
+  g += `<rect x="${left}" y="${Y(38)}" width="${W - left - right}" height="${Y(37.5) - Y(38)}" class="band-watch"/>`;
+  g += `<rect x="${left}" y="${Y(37.5)}" width="${W - left - right}" height="${Y(36.5) - Y(37.5)}" class="band-ok"/>`;
+  g += `<line x1="${left}" x2="${W - right}" y1="${Y(38)}" y2="${Y(38)}" class="hline"/>`;
+  [36.5, 37.5, 38].forEach((t) => { g += `<text x="${left - 4}" y="${Y(t) + 4}" class="ylbl">${t.toFixed(1)}</text>`; });
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const cx = left + slot * i + slot / 2;
+    if (values[i] !== null && values[i] !== undefined) {
+      pts.push(`${cx},${Y(values[i])}`);
+      g += `<circle cx="${cx}" cy="${Y(values[i])}" r="5" class="${values[i] >= 38 ? 'tdot-hot' : 'wdot'}"/><text x="${cx}" y="${Y(values[i]) - 9}" class="val">${values[i].toFixed(1)}</text>`;
+    }
+    g += `<text x="${cx}" y="${H - 6}" class="lbl">${esc(labels[i])}</text>`;
+  }
+  if (pts.length > 1) g = g.replace('<line', `<polyline points="${pts.join(' ')}" class="wline" style="stroke-width:1.5;opacity:.5"/><line`);
+  return frame(H, g, label);
+}

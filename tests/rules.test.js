@@ -154,3 +154,52 @@ test('เวลามื้อนมถัดไป', () => {
   const s = R.summarize(recs, S, at('2026-11-11', 9), 7);
   assert.equal(s.nextFeedAt, at('2026-11-11', 11));
 });
+
+/* ---------- Phase 3 ---------- */
+test('การนอน: นอนเกิน 4 ชม. ใน 2 สัปดาห์แรก = เฝ้าระวัง', () => {
+  const r = { ts: at('2026-11-10', 1), endTs: at('2026-11-10', 6) };
+  assert.equal(R.evaluateSleep(r, 8, null).level, 1);
+  assert.equal(R.evaluateSleep(r, 20, true).level, 0, 'อายุ 20 วัน น้ำหนักคืนแล้ว');
+  assert.equal(R.evaluateSleep(r, 20, false).level, 1, 'อายุ 20 วัน ยังไม่คืนน้ำหนัก');
+  assert.equal(R.evaluateSleep({ ts: at('2026-11-10', 1), endTs: at('2026-11-10', 4) }, 8, null).level, 0);
+});
+
+test('สรุปรายวันรวมไข้และตัวเหลือง แม้วันนั้นบันทึกแค่อุณหภูมิ', () => {
+  const recs = [rec('temp', '2026-11-11', 8, { tempC: 38.3, tempSite: 'axilla' })];
+  const s = R.summarize(recs, S, at('2026-11-11', 9), 7);
+  assert.equal(day(s, '2026-11-11').level, 3);
+  assert.equal(day(s, '2026-11-11').maxTemp, 38.3);
+  const recs2 = [...fullDay('2026-11-10'), rec('jaundice', '2026-11-10', 9, { zone: 3 })];
+  const s2 = R.summarize(recs2, S, at('2026-11-11', 9), 7);
+  assert.equal(day(s2, '2026-11-10').level, 2);
+  assert.equal(day(s2, '2026-11-10').maxZone, 3);
+});
+
+test('แจ้งเตือน: ถึงเวลาให้นม / เลย 30 นาที / ไม่เตือนขณะกำลังให้นม', () => {
+  const recs = [rec('feed', '2026-11-11', 6, { method: 'breast' })];
+  assert.equal(R.activeAlerts(recs, S, at('2026-11-11', 8, 59)).length, 0);
+  let a = R.activeAlerts(recs, S, at('2026-11-11', 9, 5));
+  assert.equal(a[0].key.startsWith('feed:'), true);
+  a = R.activeAlerts(recs, S, at('2026-11-11', 9, 31));
+  assert.equal(a[0].key.startsWith('feed2:'), true);
+  const feedTimer = { L: { acc: 0, runFrom: at('2026-11-11', 9) }, R: { acc: 0, runFrom: null } };
+  assert.equal(R.activeAlerts(recs, S, at('2026-11-11', 9, 31), { feedTimer }).length, 0);
+});
+
+test('แจ้งเตือน: ไม่มีฉี่ 6 และ 8 ชม.', () => {
+  const recs = [rec('pee', '2026-11-11', 1, { color: 'u2' }), rec('feed', '2026-11-11', 7, { method: 'breast' })];
+  const k = (h, m = 0) => R.activeAlerts(recs, S, at('2026-11-11', h, m)).map((x) => x.key.split(':')[0]);
+  assert.deepEqual(k(6, 30), []);
+  assert.ok(k(7, 5).includes('pee'));
+  assert.ok(k(9, 5).includes('pee8'));
+});
+
+test('แจ้งเตือน: ไข้ทันที / วัดซ้ำหลัง 20 นาทีเมื่อค่ากึ่งสูง / นอนนาน', () => {
+  const fever = [rec('temp', '2026-11-11', 9, { tempC: 38.1 })];
+  assert.equal(R.activeAlerts(fever, S, at('2026-11-11', 9, 1))[0].level, 3);
+  const warm = [rec('temp', '2026-11-11', 9, { tempC: 37.7 })];
+  assert.equal(R.activeAlerts(warm, S, at('2026-11-11', 9, 10)).length, 0);
+  assert.equal(R.activeAlerts(warm, S, at('2026-11-11', 9, 25))[0].key.startsWith('retemp:'), true);
+  const sleepTimer = { startTs: at('2026-11-11', 4) };
+  assert.ok(R.activeAlerts([], S, at('2026-11-11', 8, 30), { sleepTimer }).some((x) => x.key.startsWith('sleep:')));
+});

@@ -33,6 +33,7 @@ export const URINE_COLORS = [
 ];
 export const FEED_METHODS = { breast: 'เข้าเต้า', expressed: 'นมแม่ปั๊ม', formula: 'นมผสม' };
 export const JAUNDICE_ZONES = ['ไม่เหลือง', 'หน้า/ศีรษะ', 'ถึงหน้าอก', 'ท้องใต้สะดือ/ต้นขา', 'แขน ขา', 'ฝ่ามือ ฝ่าเท้า'];
+export const TEMP_SITES = { axilla: 'รักแร้', rectal: 'ทวารหนัก', ear: 'หู' };
 
 export const DANGER_SIGNS = [
   'ไข้ 38 °C ขึ้นไป ในทารกอายุต่ำกว่า 3 เดือน',
@@ -171,9 +172,22 @@ export function evaluateJaundice(rec, birthDate, gestationWeeks, recentPale) {
   return clean(c);
 }
 
+/** ช่วงที่ควรปลุกให้นม: 2 สัปดาห์แรก หรือยังไม่กลับถึงน้ำหนักแรกเกิด (ไม่เกิน 4 สัปดาห์) */
+export function needsWakeForFeeds(dol, weightRegained) {
+  if (!dol) return false;
+  return dol <= 14 || (dol <= 28 && weightRegained === false);
+}
+export function evaluateSleep(rec, dol, weightRegained) {
+  const c = collector();
+  if (!(rec.endTs > rec.ts)) return clean(c);
+  const h = (rec.endTs - rec.ts) / 3600000;
+  if (h > 4 && needsWakeForFeeds(dol, weightRegained)) c.add(1, `นอนต่อเนื่อง ${h.toFixed(1)} ชม. ช่วงแรกเกิดควรปลุกให้นมทุก 3–4 ชม.`);
+  return clean(c);
+}
+
 /* ---------------- รายวัน ---------------- */
 export function aggregateDay(recs) {
-  const a = { total: 0, wet: 0, stool: 0, feeds: 0, bottleMl: 0, breastMin: 0, sleepMin: 0, pees: [], poops: [], colors: {}, temps: [], jaundice: [] };
+  const a = { total: 0, wet: 0, stool: 0, feeds: 0, bottleMl: 0, breastMin: 0, sleepMin: 0, pees: [], poops: [], colors: {}, temps: [], jaundice: [], sleeps: [], maxTemp: null, maxZone: null };
   for (const r of recs) {
     if (r.deleted) continue;
     if (['pee', 'poop', 'feed'].includes(r.type)) a.total++;
@@ -183,10 +197,11 @@ export function aggregateDay(recs) {
       a.feeds++;
       if (r.method !== 'breast' && r.amount > 0) a.bottleMl += Number(r.amount);
       if (r.method === 'breast') a.breastMin += (Number(r.durL) || 0) + (Number(r.durR) || 0);
-    } else if (r.type === 'temp') a.temps.push(r);
-    else if (r.type === 'jaundice') a.jaundice.push(r);
-    else if (r.type === 'sleep' && r.endTs > r.ts) a.sleepMin += (r.endTs - r.ts) / 60000;
+    } else if (r.type === 'temp') { a.temps.push(r); if (a.maxTemp === null || Number(r.tempC) > a.maxTemp) a.maxTemp = Number(r.tempC); }
+    else if (r.type === 'jaundice') { a.jaundice.push(r); if (a.maxZone === null || Number(r.zone) > a.maxZone) a.maxZone = Number(r.zone); }
+    else if (r.type === 'sleep' && r.endTs > r.ts) { a.sleeps.push(r); a.sleepMin += (r.endTs - r.ts) / 60000; }
   }
+  a.other = a.temps.length + a.jaundice.length + a.sleeps.length;
   a.bottleMl = Math.round(a.bottleMl); a.breastMin = Math.round(a.breastMin); a.sleepMin = Math.round(a.sleepMin);
   return a;
 }
@@ -195,10 +210,16 @@ export function aggregateDay(recs) {
  * ประเมินหนึ่งวัน
  * partial = วันนี้ (ยังไม่ครบ 24 ชม.) → ไม่ประเมินจำนวน ประเมินแค่สี/ลักษณะ
  */
-export function evaluateDay(a, dol, settings, guide, partial) {
+export function evaluateDay(a, dol, settings, guide, partial, ctx = {}) {
   const c = collector();
   const ft = settings.feedingType || 'breast';
-  if (a.total === 0) return { level: null, msgs: [{ level: null, text: 'ไม่มีบันทึก' }] };
+  if (a.total === 0 && !a.other) return { level: null, msgs: [{ level: null, text: 'ไม่มีบันทึก' }] };
+
+  const ageDays = dol ? dol - 1 : null;
+  for (const t of a.temps || []) evaluateTemp(t, ageDays).msgs.forEach((m) => c.add(m.level, 'อุณหภูมิ: ' + m.text));
+  for (const j of a.jaundice || []) evaluateJaundice(j, settings.birthDate, Number(settings.gestationWeeks) || null, !!ctx.recentPale).msgs.forEach((m) => c.add(m.level, 'ตัวเหลือง: ' + m.text));
+  for (const sl of a.sleeps || []) evaluateSleep(sl, dol, ctx.weightRegained).msgs.forEach((m) => c.add(m.level, m.text));
+  if (a.total === 0) return clean(c);
 
   for (const p of a.poops) evaluateStool(p, dol).msgs.forEach((m) => c.add(m.level, m.text));
   for (const p of a.pees) evaluateUrine(p, dol).msgs.forEach((m) => c.add(m.level, m.text));
@@ -263,7 +284,10 @@ export function summarize(records, settings, now = Date.now(), nDays = 7) {
     const a = aggregateDay(byDay.get(d) || []);
     const dol = dayOfLife(birth, d);
     const guide = feedGuide(dol, weightOn(settings, weights, d), settings.feedingType);
-    const ev = evaluateDay(a, dol, settings, guide, d === today);
+    const dayEnd = new Date(d + 'T23:59:59').getTime();
+    const recentPale = live.some((r) => r.type === 'poop' && ['s01', 's02', 's03'].includes(r.color) && r.ts <= dayEnd && dayEnd - r.ts < 3 * DAY_MS);
+    const wNow = weightOn(settings, weights, d), bw = Number(settings.birthWeightKg);
+    const ev = evaluateDay(a, dol, settings, guide, d === today, { recentPale, weightRegained: bw && wNow ? wNow >= bw : null });
     days.push({ date: d, dol, isToday: d === today, ...a, expWet: expectedWet(dol), expStool: expectedStool(dol, settings.feedingType), guide, level: ev.level, msgs: ev.msgs });
   }
 
@@ -288,19 +312,12 @@ export function summarize(records, settings, now = Date.now(), nDays = 7) {
     if (peeHours >= 8) overall.add(2, `ไม่มีบันทึกปัสสาวะมา ${Math.floor(peeHours)} ชม. ถ้าไม่ได้ลืมบันทึก ควรให้นมทันทีและปรึกษาแพทย์`);
     else if (peeHours >= peeAlertH) overall.add(1, `ไม่มีบันทึกปัสสาวะมา ${Math.floor(peeHours)} ชม. ลองให้นมและสังเกต`);
   }
-  // อุณหภูมิล่าสุดใน 24 ชม. และตัวเหลืองล่าสุดใน 48 ชม.
-  const lastTemp = live.filter((r) => r.type === 'temp' && now - r.ts < DAY_MS).sort((a, b) => b.ts - a.ts)[0];
-  if (lastTemp) evaluateTemp(lastTemp, ageDays).msgs.forEach((m) => overall.add(m.level, 'อุณหภูมิ: ' + m.text));
-  const lastJ = live.filter((r) => r.type === 'jaundice' && now - r.ts < 2 * DAY_MS).sort((a, b) => b.ts - a.ts)[0];
-  if (lastJ) {
-    const pale = live.some((r) => r.type === 'poop' && ['s01', 's02', 's03'].includes(r.color) && now - r.ts < 3 * DAY_MS);
-    evaluateJaundice(lastJ, birth, Number(settings.gestationWeeks) || null, pale).msgs.forEach((m) => overall.add(m.level, 'ตัวเหลือง: ' + m.text));
-  }
+  // อุณหภูมิ ตัวเหลือง และการนอน ถูกประเมินในสรุปรายวัน (วันนี้/เมื่อวาน) แล้ว
   if (!birth) overall.msgs.unshift({ level: 0, text: 'ใส่วันเกิดในหน้า "ตั้งค่า" เพื่อให้ประเมินตามอายุได้' });
 
   const intervalH = Number(settings.feedIntervalH) || 3;
   const res = clean(overall);
-  if (!live.some((r) => ['pee', 'poop', 'feed'].includes(r.type))) res.level = null;
+  if (!live.length) res.level = null;
   return {
     today, dolToday, days, overall: res, weight: wEval,
     guideToday: feedGuide(dolToday, weightOn(settings, weights, today), settings.feedingType),
@@ -308,3 +325,57 @@ export function summarize(records, settings, now = Date.now(), nDays = 7) {
     nextFeedAt: lastFeed ? lastFeed.ts + intervalH * 3600000 : null
   };
 }
+
+/* ---------------- แจ้งเตือนในแอป (Phase 3) ---------------- */
+/**
+ * คืนรายการเตือนที่ควรแสดงตอนนี้ แต่ละรายการมี key ไม่ซ้ำ (ใช้กันแจ้งซ้ำ)
+ * timers: { feedTimer, sleepTimer } จากเครื่อง
+ */
+export function activeAlerts(records, settings, now = Date.now(), timers = {}) {
+  const out = [];
+  const live = records.filter((r) => !r.deleted);
+  const birth = settings.birthDate;
+  const dol = dayOfLife(birth, localDate(now));
+  const latest = (type) => live.filter((r) => r.type === type).sort((a, b) => b.ts - a.ts)[0] || null;
+  const feeding = timers.feedTimer && (timers.feedTimer.L.runFrom || timers.feedTimer.R.runFrom);
+  const sleepingSince = timers.sleepTimer && timers.sleepTimer.startTs;
+
+  const lf = latest('feed');
+  const iv = (Number(settings.feedIntervalH) || 3) * 3600000;
+  if (lf && !feeding) {
+    const due = lf.ts + iv;
+    const sleepNote = sleepingSince ? ' (ลูกกำลังนอน — ช่วงแรกเกิดควรปลุกให้นม)' : '';
+    if (now >= due + 30 * 60000) out.push({ key: 'feed2:' + lf.id, level: 1, title: 'เลยเวลาให้นมมา 30 นาทีแล้ว', body: `มื้อล่าสุด ${hhmm(lf.ts)}${sleepNote}` });
+    else if (now >= due) out.push({ key: 'feed:' + lf.id, level: 0, title: 'ถึงเวลาให้นม', body: `มื้อล่าสุดเมื่อ ${hhmm(lf.ts)} (ครบ ${settings.feedIntervalH || 3} ชม.)${sleepNote}` });
+  }
+
+  const lp = latest('pee');
+  const lastAny = live.filter((r) => ['pee', 'poop', 'feed'].includes(r.type)).sort((a, b) => b.ts - a.ts)[0];
+  const active = lastAny && now - lastAny.ts < 12 * 3600000;
+  const alertH = Number(settings.peeAlertH) || 6;
+  if (lp && dol >= 2 && active) {
+    const h = (now - lp.ts) / 3600000;
+    if (h >= 8) out.push({ key: 'pee8:' + lp.id, level: 2, title: `ไม่มีฉี่มา ${Math.floor(h)} ชม.`, body: 'ถ้าไม่ได้ลืมบันทึก ให้นมทันที และปรึกษาแพทย์' });
+    else if (h >= alertH) out.push({ key: 'pee:' + lp.id, level: 1, title: `ไม่มีฉี่มา ${Math.floor(h)} ชม.`, body: 'ลองให้นม แล้วสังเกตผ้าอ้อม' });
+  }
+
+  const lt = latest('temp');
+  if (lt && now - lt.ts < 3 * 3600000) {
+    const ev = evaluateTemp(lt, dol ? dol - 1 : null);
+    if (ev.level >= 2) out.push({ key: 'fever:' + lt.id, level: ev.level, title: ev.level === 3 ? 'มีไข้ — พบแพทย์ทันที' : 'อุณหภูมิผิดปกติ', body: ev.msgs[0].text });
+    else if (ev.level === 1) {
+      const newer = live.some((r) => r.type === 'temp' && r.ts > lt.ts);
+      if (!newer && now - lt.ts >= 20 * 60000) out.push({ key: 'retemp:' + lt.id, level: 1, title: 'ถึงเวลาวัดไข้ซ้ำ', body: `ครั้งก่อน ${Number(lt.tempC).toFixed(1)} °C เมื่อ ${hhmm(lt.ts)}` });
+    }
+  }
+
+  if (sleepingSince) {
+    const h = (now - sleepingSince) / 3600000;
+    const bw = Number(settings.birthWeightKg);
+    const lw = live.filter((r) => r.type === 'weight').sort((a, b) => b.ts - a.ts)[0];
+    const regained = bw && lw ? Number(lw.amount) >= bw : null;
+    if (h >= 4 && needsWakeForFeeds(dol, regained)) out.push({ key: 'sleep:' + sleepingSince, level: 1, title: `ลูกนอนมา ${Math.floor(h)} ชม.`, body: 'ช่วงแรกเกิดควรปลุกให้นมทุก 3–4 ชม.' });
+  }
+  return out.sort((a, b) => b.level - a.level);
+}
+function hhmm(ts) { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
