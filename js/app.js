@@ -7,7 +7,7 @@ import * as P from './photos.js';
 import * as Rep from './report.js';
 import * as AI from './ai.js';
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.5.1';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 

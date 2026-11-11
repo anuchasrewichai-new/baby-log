@@ -17,9 +17,24 @@ function open() {
         if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
         if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const d = req.result;
+        // เวอร์ชันใหม่ของแอปเปิดในหน้าต่างอื่น → ปิดการเชื่อมต่อนี้ให้ฐานข้อมูลอัปเกรดได้
+        d.onversionchange = () => { d.close(); try { location.reload(); } catch (e) { /* ignore */ } };
+        const n = document.getElementById('db-blocked'); if (n) n.remove();
+        resolve(d);
+      };
       req.onerror = () => { useMem = true; resolve(null); };
-      req.onblocked = () => { useMem = true; resolve(null); };
+      // ฐานข้อมูลถูกล็อกโดยแอปเวอร์ชันเก่าที่เปิดค้างในหน้าต่างอื่น: รอ (ห้ามใช้หน่วยความจำแทน เพราะข้อมูลจะดูเหมือนหายและบันทึกใหม่จะไม่ถูกเก็บ)
+      req.onblocked = () => {
+        if (typeof document === 'undefined' || document.getElementById('db-blocked')) return;
+        const el = document.createElement('div');
+        el.id = 'db-blocked';
+        el.setAttribute('role', 'alert');
+        el.style.cssText = 'position:fixed;inset:0;z-index:99;background:rgba(0,0,0,.85);color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font:16px/1.6 sans-serif';
+        el.textContent = 'กำลังอัปเดตแอป — แอปนี้เปิดค้างอยู่ในแท็บหรือหน้าต่างอื่น กรุณาปิดแท็บ/หน้าต่างนั้น แล้วหน้านี้จะเปิดต่อเอง (ข้อมูลไม่หาย)';
+        document.body.appendChild(el);
+      };
     } catch (e) { useMem = true; resolve(null); }
   });
   return dbp;
