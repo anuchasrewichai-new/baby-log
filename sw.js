@@ -1,9 +1,9 @@
 // sw.js — แคชตัวแอปให้เปิดได้แม้ออฟไลน์ (ข้อมูลอยู่ใน IndexedDB ไม่ได้อยู่ในแคชนี้)
-const VERSION = 'v1.0.1';
+const VERSION = 'v1.1.0';
 const CACHE = 'baby-log-' + VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
-  './js/app.js', './js/rules.js', './js/db.js', './js/sync.js', './js/charts.js',
+  './js/app.js', './js/rules.js', './js/db.js', './js/sync.js', './js/charts.js', './js/photos.js',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',

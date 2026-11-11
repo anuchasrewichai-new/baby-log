@@ -24,6 +24,7 @@ http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/__key') { res.end(key); return; }
+  if (url.pathname === '/__photos') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ rows: gas.ss.getSheetByName('Photos').data, files: [...gas.drive.files.values()].map((f) => ({ id: f.id, trashed: f.trashed, bytes: f.blob.bytes.length, name: f.blob.name })) })); return; }
   if (url.pathname === '/__sheet') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(gas.ss.getSheetByName('Logs').data)); return; }
   let p = path.join(root, decodeURIComponent(url.pathname));
   if (!p.startsWith(root)) { res.writeHead(403); res.end(); return; }

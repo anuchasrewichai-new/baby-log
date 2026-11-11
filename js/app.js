@@ -3,12 +3,13 @@ import * as R from './rules.js';
 import { db, uid } from './db.js';
 import * as Sync from './sync.js';
 import * as C from './charts.js';
+import * as P from './photos.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 
-const DEFAULT_SETTINGS = { babyName: '', birthDate: '', birthWeightKg: '', gestationWeeks: '', feedingType: 'breast', feedIntervalH: 3, peeAlertH: 6, updatedAt: 0 };
+const DEFAULT_SETTINGS = { babyName: '', birthDate: '', birthWeightKg: '', gestationWeeks: '', feedingType: 'breast', feedIntervalH: 3, peeAlertH: 6, photoRetentionDays: 30, photoMode: 'drive', updatedAt: 0 };
 const S = {
   records: [], settings: { ...DEFAULT_SETTINGS }, sum: null, range: 7,
   draft: {}, draftKey: '', confirmDel: false, syncCfg: { url: '', key: '' }, sync: Sync.syncState(),
@@ -56,7 +57,9 @@ const ICON = {
   pause: '<path d="M9 6v12M15 6v12"/>',
   sync: '<path d="M20 11a8 8 0 0 0-14.9-3M4 5v4h4M4 13a8 8 0 0 0 14.9 3M20 19v-4h-4"/>',
   cloudOff: '<path d="M3 3l18 18M8 8a5 5 0 0 0-1 9.9h10M18.5 13.9A4 4 0 0 0 15 8h-.5"/>',
-  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  camera: '<path d="M4 7h3l2-3h6l2 3h3v13H4z"/><circle cx="12" cy="13" r="4"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>'
 };
 const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 
@@ -65,6 +68,8 @@ function normSettings(s) {
   const o = { ...DEFAULT_SETTINGS, ...(s || {}) };
   o.feedIntervalH = num(o.feedIntervalH) || 3;
   o.peeAlertH = num(o.peeAlertH) || 6;
+  o.photoRetentionDays = o.photoRetentionDays === '' || o.photoRetentionDays === null || o.photoRetentionDays === undefined ? 30 : Number(o.photoRetentionDays);
+  o.photoMode = o.photoMode === 'local' ? 'local' : 'drive';
   return o;
 }
 function recompute() { S.sum = R.summarize(S.records, S.settings, Date.now(), S.range); }
@@ -133,6 +138,7 @@ function render() {
   else if (v === 'settings') html = viewSettings();
   else if (v === 'danger') html = viewDanger();
   else html = viewHome();
+  if (S.viewer) html += `<div class="viewer" role="dialog" aria-label="ดูรูป"><img src="${S.viewer}" alt="รูปผ้าอ้อมที่ถ่าย"><button type="button" class="viewer-close" data-act="viewer-close" aria-label="ปิด">${icon('close')}</button></div>`;
   $app.innerHTML = html;
   tick();
   const h1 = $app.querySelector('h1');
@@ -188,7 +194,7 @@ function recordLine(r) {
   else title = r.type;
   const thumb = img ? `<img src="${img}" alt="" class="thumb">` : `<span class="thumb thumb-ic">${icon(r.type === 'feed' ? 'bottle' : 'scale', 's')}</span>`;
   const chip = lv !== null && lv !== undefined ? `<span class="lvchip ${lvClass(lv)}">${lvText(lv)}</span>` : '';
-  return `<a class="row" href="#/log/${r.type}?id=${encodeURIComponent(r.id)}">${thumb}<span class="row-main"><span class="row-title">${esc(title)}</span><span class="row-sub">${sub}${r.note ? ' · ' + esc(r.note) : ''}${r._dirty && S.syncCfg.url ? ' · รอซิงก์' : ''}</span></span>${chip}</a>`;
+  return `<a class="row" href="#/log/${r.type}?id=${encodeURIComponent(r.id)}">${thumb}<span class="row-main"><span class="row-title">${esc(title)}</span><span class="row-sub">${sub}${r.photoId ? ' · มีรูป' : ''}${r.note ? ' · ' + esc(r.note) : ''}${r._dirty && S.syncCfg.url ? ' · รอซิงก์' : ''}</span></span>${chip}</a>`;
 }
 
 /* ===================== หน้าเริ่มต้นใช้งาน ===================== */
@@ -259,7 +265,13 @@ function loadDraft(type, id) {
   if (S.draftKey === key) return S.draft;
   S.draftKey = key; S.confirmDel = false;
   const rec = id ? S.records.find((r) => r.id === id) : null;
-  if (rec) S.draft = { ...rec };
+  if (rec) {
+    S.draft = { ...rec };
+    if (rec.photoId && !P.cachedUrl(rec.photoId)) {
+      S.photoLoading = true;
+      P.photoUrl(rec.photoId, { fetchRemote: !!S.syncCfg.url }).then(() => { S.photoLoading = false; if (S.draftKey === key) render(); });
+    }
+  }
   else {
     const base = { type, ts: Date.now(), note: '' };
     if (type === 'poop') Object.assign(base, { color: '', consistency: 'soft' });
@@ -308,10 +320,24 @@ function poopBody(d) {
   const ev = d.color ? R.evaluateStool(d, dol) : null;
   const result = ev ? `<section class="result ${lvClass(ev.level)}"><div class="result-title">${esc(stoolMeta(d.color).label)} — ${d.color === 's04' && ev.level === 0 ? 'ปกติในช่วงวันแรก' : lvText(ev.level)}</div>${ev.msgs.length ? msgList(ev.msgs) : `<div class="small">${stoolNormalText(d.color)}</div>`}</section>` : '';
   const cons = R.CONSISTENCY.map((c) => `<button type="button" class="pill ${d.consistency === c.id ? 'on' : ''}" data-act="pick-cons" data-v="${c.id}" aria-pressed="${d.consistency === c.id}">${c.label}</button>`).join('');
-  return `<p class="hint pad">แตะภาพที่ใกล้เคียงที่สุด · ดูในแสงธรรมชาติ ถ้าก้ำกึ่งกับภาพสีซีด ให้เลือกสีซีดไว้ก่อน</p>
+  return `${photoPanel(d, stoolMeta(d.color))}<p class="hint pad">แตะภาพที่ใกล้เคียงที่สุด · ดูในแสงธรรมชาติ ถ้าก้ำกึ่งกับภาพสีซีด ให้เลือกสีซีดไว้ก่อน</p>
     <section class="swatches" aria-label="สีอุจจาระ">${cards}</section>
     ${result}
     <h2 class="sec pad">ลักษณะ</h2><div class="pills pad">${cons}</div>`;
+}
+function photoInput(label, cls) {
+  return `<label class="${cls}">${label}<input type="file" accept="image/*" capture="environment" data-act="photo-input" hidden></label>`;
+}
+function photoPanel(d, ref) {
+  if (!d.photoId) return `<div class="pad">${photoInput(`${icon('camera')}ถ่ายรูปผ้าอ้อมเพื่อเทียบสี (ไม่บังคับ)`, 'btn btn-block photo-btn')}</div>`;
+  const url = P.cachedUrl(d.photoId);
+  const ph = S.photoLoading ? 'กำลังโหลดรูป…' : S.syncCfg.url ? 'โหลดรูปไม่ได้ (ออฟไลน์?)' : 'ไม่พบรูปในเครื่องนี้';
+  return `<section class="compare" aria-label="เทียบรูปจริงกับภาพตัวอย่าง">
+    <figure><button type="button" class="cmp-img" data-act="photo-view" ${url ? '' : 'disabled'}>${url ? `<img src="${url}" alt="รูปผ้าอ้อมที่ถ่าย">` : `<span class="cmp-ph">${ph}</span>`}</button><figcaption>รูปจริง · แตะเพื่อขยาย</figcaption></figure>
+    <figure><div class="cmp-img">${ref ? `<img src="img/${ref.img}" alt="">` : '<span class="cmp-ph">แตะเลือกภาพด้านล่าง</span>'}</div><figcaption>${ref ? 'ตัวอย่าง: ' + esc(ref.short || ref.label) : 'ภาพตัวอย่าง'}</figcaption></figure>
+    <div class="cmp-actions">${photoInput('ถ่ายใหม่', 'link')}<button type="button" class="link" data-act="photo-remove">ลบรูป</button></div>
+    <p class="cmp-note">สีบนจออาจเพี้ยนตามแสง ถ้าก้ำกึ่งกับภาพสีซีด ให้ถือว่าผิดปกติไว้ก่อนและส่งรูปให้แพทย์ดู</p>
+  </section>`;
 }
 function stoolNormalText(id) {
   return {
@@ -330,7 +356,7 @@ function peeBody(d) {
     return `<button type="button" class="swatch ${d.color === c.id ? 'on ' + lvClass(lv) : ''}" data-act="pick-color" data-v="${c.id}" aria-pressed="${d.color === c.id}"><img src="img/${c.img}" alt="" loading="lazy"><span class="sw-label">${esc(c.label)}</span><span class="badge ${lvClass(lv)}">${lvText(lv)}</span></button>`;
   }).join('');
   const ev = R.evaluateUrine(d, dol);
-  return `<p class="hint pad">เลือกสีคราบบนผ้าอ้อม (ไม่แน่ใจ เลือก "เหลือง" ได้)</p>
+  return `${photoPanel(d, urineMeta(d.color))}<p class="hint pad">เลือกสีคราบบนผ้าอ้อม (ไม่แน่ใจ เลือก "เหลือง" ได้)</p>
     <section class="swatches" aria-label="สีปัสสาวะ">${cards}</section>
     ${ev.msgs.length ? `<section class="result ${lvClass(ev.level)}">${msgList(ev.msgs)}</section>` : ''}`;
 }
@@ -460,6 +486,8 @@ function viewSettings() {
       <p class="small ${st.status === 'error' ? 'txt-2' : 'muted'}">${st.status === 'error' ? esc(st.error) : st.lastAt ? `ซิงก์ล่าสุด ${hm(st.lastAt)} · รอส่ง ${st.pending} รายการ` : cfg.url ? 'ยังไม่เคยซิงก์' : 'ยังไม่ได้ตั้งค่า'}</p>
     </section>
 
+    ${photoSettings()}
+
     <section class="card form"><h2 class="card-title">ติดตั้งเป็นแอป</h2>
       ${standalone ? '<p class="small">ติดตั้งแล้ว ✓</p>' : S.installEvt ? '<button type="button" class="btn btn-primary" data-act="install">ติดตั้งลงหน้าจอหลัก</button>' : isIOS ? '<p class="small">ใน Safari กดปุ่ม <b>แชร์</b> (สี่เหลี่ยมมีลูกศรขึ้น) แล้วเลือก <b>เพิ่มไปยังหน้าจอโฮม</b></p>' : '<p class="small">เปิดเมนูของเบราว์เซอร์ (⋮) แล้วเลือก <b>ติดตั้งแอป</b> หรือ <b>เพิ่มลงในหน้าจอหลัก</b></p>'}
     </section>
@@ -566,8 +594,56 @@ const actions = {
     recompute(); toast('ลบข้อมูลในเครื่องแล้ว'); go('#/');
   },
   async install() { if (S.installEvt) { S.installEvt.prompt(); await S.installEvt.userChoice; S.installEvt = null; render(); } },
-  'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); }
+  'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); },
+  'photo-view'() { const u = P.cachedUrl(S.draft.photoId); if (u) { S.viewer = u; render(); } },
+  'viewer-close'() { S.viewer = null; render(); },
+  'photo-remove'() {
+    if (S.draft.newPhoto && S.draft.newPhoto.id === S.draft.photoId) S.draft.newPhoto = null;
+    else if (S.draft.photoId) S.draft.removedPhotoId = S.draft.photoId;
+    S.draft.photoId = ''; render();
+  },
+  async 'photo-cleanup'() {
+    try {
+      let msg;
+      if (S.syncCfg.url && S.settings.photoMode !== 'local') {
+        const res = await Sync.api('cleanupPhotos', { days: S.settings.photoRetentionDays });
+        msg = res.days ? `ย้าย ${res.trashed} รูปเข้าถังขยะ Drive · เก็บรูปที่ถูกเตือน ${res.kept} รูป` : 'ตั้งไว้ "ไม่ลบรูป"';
+      }
+      const loc = await P.pruneLocal(S.settings, S.records, { force: true });
+      toast(msg || `ล้างรูปในเครื่อง ${loc.removed} รูป`);
+      await loadPhotoInfo();
+    } catch (e) { toast(e.message); }
+  }
 };
+
+async function loadPhotoInfo() {
+  S.photoInfo = { local: await P.localStats(), remote: null, loading: !!S.syncCfg.url };
+  if (route().parts[0] === 'settings') render();
+  if (!S.syncCfg.url) return;
+  try { S.photoInfo.remote = await Sync.api('photoStats', {}, 20000); } catch (e) { S.photoInfo.error = e.message; }
+  S.photoInfo.loading = false;
+  if (route().parts[0] === 'settings') { const y = window.scrollY; render(); window.scrollTo(0, y); }
+}
+const mb = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB');
+function photoSettings() {
+  const st = S.settings, info = S.photoInfo || { local: { count: 0, bytes: 0, pending: 0 } };
+  const r = info.remote;
+  const usage = r && r.driveLimit ? `<div class="bar bar-lg"><div class="bar-accent" style="width:${Math.max(1, (r.bytes / r.driveLimit) * 100)}%"></div><div class="bar-other" style="width:${((r.driveUsed - r.bytes) / r.driveLimit) * 100}%"></div></div>
+      <div class="row-between small muted"><span>แอปนี้ ${mb(r.bytes)} · อื่น ๆ ใน Google ${mb(Math.max(0, r.driveUsed - r.bytes))}</span><span>จาก ${mb(r.driveLimit)}</span></div>` : '';
+  return `<section class="card form" id="photos"><h2 class="card-title">รูปถ่ายและพื้นที่</h2>
+    ${S.syncCfg.url ? (r ? `<div class="row-between"><span>รูปใน Google Drive</span><b>${r.count} รูป · ${mb(r.bytes)}</b></div>${usage}<div class="row-between small"><span>รูปที่ถูกเตือน (เก็บไว้เสมอ)</span><b>${r.keep} รูป</b></div>` : `<p class="small muted">${info.loading ? 'กำลังดูข้อมูลใน Drive…' : esc(info.error || '')}</p>`) : '<p class="small muted">ยังไม่ได้ตั้งค่าซิงก์ รูปจะเก็บในเครื่องนี้เท่านั้น</p>'}
+    <div class="row-between small"><span>ในเครื่องนี้</span><span>${info.local.count} รูป · ${mb(info.local.bytes)}${info.local.pending && S.syncCfg.url && st.photoMode !== 'local' ? ` · รออัปโหลด ${info.local.pending}` : ''}</span></div>
+    <form data-form="photoprefs" class="form form-flat">
+      <label class="field"><span>เก็บรูปที่</span><select name="photoMode">
+        <option value="drive" ${st.photoMode !== 'local' ? 'selected' : ''}>Google Drive + ในเครื่อง</option>
+        <option value="local" ${st.photoMode === 'local' ? 'selected' : ''}>ในเครื่องนี้เท่านั้น</option></select></label>
+      <label class="field"><span>ลบรูปที่ผลปกติ เมื่อเก่ากว่า</span><select name="photoRetentionDays">
+        ${[[7, '7 วัน'], [30, '30 วัน'], [90, '90 วัน'], [0, 'ไม่ลบ']].map(([v, l]) => `<option value="${v}" ${Number(st.photoRetentionDays) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </form>
+    <p class="small muted">รูปที่สีหรือลักษณะผิดปกติ (ถูกเตือน) จะ<b>ไม่ถูกลบอัตโนมัติ</b> · รูปที่ลบใน Drive ไปอยู่ในถังขยะ กู้คืนได้ภายใน 30 วัน${st.photoMode === 'local' ? ' · โหมดในเครื่อง: ถ้าล้างแอปหรือเปลี่ยนเครื่อง รูปจะหาย และอีกเครื่องจะไม่เห็นรูป' : ''}</p>
+    <div class="btn-row"><button type="button" class="btn" data-act="photo-cleanup">ล้างรูปเก่าตอนนี้</button>${r && r.folderUrl ? `<a class="btn" href="${esc(r.folderUrl)}" target="_blank" rel="noopener">เปิดโฟลเดอร์ใน Drive</a>` : ''}</div>
+  </section>`;
+}
 
 async function saveDraft() {
   const d = S.draft, { parts, params } = route();
@@ -596,6 +672,13 @@ async function saveDraft() {
     if (!rec.amount || rec.amount < 0.5 || rec.amount > 20) { toast('น้ำหนักไม่ถูกต้อง'); return; }
   }
   rec.note = String(rec.note || '').slice(0, 200);
+  const newPhoto = rec.newPhoto, removed = rec.removedPhotoId;
+  delete rec.newPhoto; delete rec.removedPhotoId;
+  if (newPhoto && rec.photoId === newPhoto.id) {
+    await P.savePhoto({ id: newPhoto.id, recordId: rec.id, blob: newPhoto.blob, ts: rec.ts, keep: P.shouldKeep(rec, S.settings.birthDate) });
+  }
+  if (removed && removed !== rec.photoId) await P.removePhoto(removed);
+  if (!rec.photoId) rec.photoId = '';
   await saveRecord(rec);
   S.draftKey = '';
   const lv = type === 'poop' ? R.evaluateStool(rec, R.dayOfLife(S.settings.birthDate, R.localDate(rec.ts))).level : 0;
@@ -628,6 +711,25 @@ document.addEventListener('input', (ev) => {
 });
 document.addEventListener('change', async (ev) => {
   const el = ev.target;
+  if (el.dataset.act === 'photo-input' && el.files && el.files[0]) {
+    try {
+      toast('กำลังย่อรูป…');
+      const { blob } = await P.compress(el.files[0]);
+      const id = P.newPhotoId();
+      if (S.draft.photoId && !(S.draft.newPhoto && S.draft.newPhoto.id === S.draft.photoId)) S.draft.removedPhotoId = S.draft.photoId;
+      S.draft.newPhoto = { id, blob }; S.draft.photoId = id;
+      P.tempUrl(id, blob);
+      toast(`ได้รูปแล้ว (${Math.round(blob.size / 1024)} KB) · เลือกภาพตัวอย่างที่ใกล้ที่สุด`);
+      render();
+    } catch (e) { toast(e.message || 'เปิดรูปไม่ได้'); }
+    return;
+  }
+  if (el.form && el.form.dataset.form === 'photoprefs') {
+    await saveSettings({ [el.name]: el.name === 'photoRetentionDays' ? Number(el.value) : el.value });
+    toast('บันทึกแล้ว');
+    loadPhotoInfo();
+    return;
+  }
   if (el.dataset.act === 'import' && el.files && el.files[0]) {
     try {
       const data = JSON.parse(await el.files[0].text());
@@ -672,7 +774,7 @@ document.addEventListener('submit', async (ev) => {
   }
 });
 
-window.addEventListener('hashchange', () => { if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
+window.addEventListener('hashchange', () => { S.viewer = null; if (route().parts[0] === 'settings') loadPhotoInfo(); if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
 window.addEventListener('online', () => scheduleSync(300));
 window.addEventListener('offline', () => { S.sync = { ...S.sync, status: 'offline' }; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { recompute(); if (route().parts[0] !== 'log') render(); scheduleSync(500); } });
@@ -698,6 +800,8 @@ async function init() {
   recompute();
   render();
   db.persist();
+  P.pruneLocal(S.settings, S.records).catch(() => {});
+  if (route().parts[0] === 'settings') loadPhotoInfo();
   scheduleSync(800);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     try {

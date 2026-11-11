@@ -45,6 +45,17 @@ async function call(cfg, body, timeoutMs = 25000) {
   } finally { clearTimeout(t); }
 }
 
+/** เรียก API ด้วยค่าที่ตั้งไว้ (ใช้กับรูปถ่าย) */
+export async function api(action, body = {}, timeoutMs = 45000) {
+  const cfg = await getConfig();
+  if (!cfg.url || !cfg.key) throw new Error('ยังไม่ได้ตั้งค่าซิงก์');
+  return call(cfg, { ...body, action }, timeoutMs);
+}
+
+let photoHook = null;
+/** ให้ photos.js ลงทะเบียนงานที่ต้องทำต่อหลังซิงก์ข้อมูล (อัปโหลดรูปในคิว) */
+export function setPhotoHook(fn) { photoHook = fn; }
+
 export async function testConnection(cfg) {
   return call(cfg, { action: 'ping' }, 15000);
 }
@@ -52,7 +63,10 @@ export async function testConnection(cfg) {
 export async function countPending() {
   const recs = await db.allRecords();
   const s = await db.get('settings');
-  return recs.filter((r) => r._dirty).length + (s && s._dirty ? 1 : 0);
+  const photos = await db.allPhotos();
+  const mode = s && s.photoMode === 'local' ? 'local' : 'drive';
+  const pendingPhotos = mode === 'drive' ? photos.filter((p) => !p.uploaded && p.blob).length : 0;
+  return recs.filter((r) => r._dirty).length + (s && s._dirty ? 1 : 0) + pendingPhotos;
 }
 
 /** ซิงก์ทั้งหมด คืนค่า true ถ้ามีข้อมูลเปลี่ยนในเครื่อง */
@@ -109,6 +123,7 @@ export function syncNow() {
         cursor = res.seq;
         await db.set('syncCursor', cursor);
       }
+      if (photoHook) { try { await photoHook(); } catch (e) { console.warn('photo upload', e); } }
       const now = Date.now();
       await db.set('lastSyncAt', now);
       emit({ status: 'ok', lastAt: now, pending: await countPending(), error: null });

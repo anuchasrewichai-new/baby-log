@@ -12,12 +12,15 @@
  * ข้อมูลอยู่ใน Google Sheet ของคุณเท่านั้น
  */
 
-var API_VERSION = '1.0.0';
-var SHEETS = { LOGS: 'Logs', SETTINGS: 'Settings', CONFIG: 'Config' };
+var API_VERSION = '1.1.0';
+var SHEETS = { LOGS: 'Logs', SETTINGS: 'Settings', CONFIG: 'Config', PHOTOS: 'Photos' };
+var PHOTO_COLS = ['PhotoID', 'DriveFileID', 'RecordID', 'Ts', 'Time', 'Bytes', 'Keep', 'CreatedAt', 'Trashed'];
+var PHOTO_FOLDER_NAME = 'Baby Log Photos';
+var MAX_PHOTO_BYTES = 1500000;
 var LOG_COLS = ['ID', 'Seq', 'Type', 'Ts', 'Time', 'EndTs', 'Color', 'Consistency', 'Amount', 'Method',
                 'DurL', 'DurR', 'TempC', 'TempSite', 'Zone', 'PhotoID', 'Note', 'UpdatedAt', 'Deleted', 'Device', 'BabyID', 'Side'];
 var TYPES = ['pee', 'poop', 'feed', 'weight', 'temp', 'jaundice', 'sleep'];
-var SETTING_KEYS = ['babyName', 'birthDate', 'birthWeightKg', 'gestationWeeks', 'feedingType', 'feedIntervalH', 'peeAlertH'];
+var SETTING_KEYS = ['babyName', 'birthDate', 'birthWeightKg', 'gestationWeeks', 'feedingType', 'feedIntervalH', 'peeAlertH', 'photoRetentionDays', 'photoMode'];
 var MAX_PUSH = 500;
 
 /* ======================= ติดตั้ง ======================= */
@@ -30,8 +33,22 @@ function setup() {
   if (!key) { key = newKey_(); props.setProperty('FAMILY_KEY', key); }
   if (!props.getProperty('SEQ')) props.setProperty('SEQ', '0');
   writeConfigSheet_(key);
+  photoFolder_();
+  installDailyCleanup();
   Logger.log('ติดตั้งเสร็จ รหัสครอบครัว: ' + key);
   return key;
+}
+
+/** ตั้งเวลาล้างรูปเก่าอัตโนมัติทุกวัน ตี 3 (เรียกจาก setup แล้ว) */
+function installDailyCleanup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'dailyCleanup') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyCleanup').timeBased().everyDays(1).atHour(3).create();
+}
+
+function dailyCleanup() {
+  return cleanupPhotos_(null);
 }
 
 /** สร้างรหัสครอบครัวใหม่ (อุปกรณ์เดิมต้องใส่รหัสใหม่) */
@@ -70,6 +87,11 @@ function ensureSheets_() {
     st.setFrozenRows(1);
   }
   sheet_(SHEETS.CONFIG);
+  var ph = sheet_(SHEETS.PHOTOS);
+  if (ph.getLastRow() === 0) {
+    ph.getRange(1, 1, 1, PHOTO_COLS.length).setValues([PHOTO_COLS]).setFontWeight('bold');
+    ph.setFrozenRows(1);
+  }
 }
 
 function ss_() {
@@ -106,6 +128,11 @@ function doPost(e) {
     switch (req.action) {
       case 'ping': return json_({ ok: true, version: API_VERSION, serverTime: Date.now() });
       case 'sync': return json_(sync_(req));
+      case 'uploadPhoto': return json_(uploadPhoto_(req));
+      case 'getPhoto': return json_(getPhoto_(req));
+      case 'deletePhoto': return json_(deletePhoto_(req));
+      case 'photoStats': return json_(photoStats_());
+      case 'cleanupPhotos': return json_(cleanupPhotos_(req.days));
       default: return json_({ ok: false, error: 'unknown_action' });
     }
   } catch (err) {
@@ -258,4 +285,135 @@ function numOrBlank_(v) {
   if (v === null || v === undefined || v === '') return '';
   var n = Number(v);
   return isFinite(n) ? n : '';
+}
+
+
+/* ======================= รูปถ่าย (Phase 2) ======================= */
+
+function photoFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('PHOTO_FOLDER_ID');
+  if (id) {
+    try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (e) { /* สร้างใหม่ */ }
+  }
+  var folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
+  folder.setDescription('รูปผ้าอ้อมจากแอปบันทึกลูกน้อย · ไม่ได้แชร์ให้ใคร');
+  props.setProperty('PHOTO_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function photoRows_() {
+  var sh = sheet_(SHEETS.PHOTOS);
+  var last = sh.getLastRow();
+  return { sh: sh, rows: last > 1 ? sh.getRange(2, 1, last - 1, PHOTO_COLS.length).getValues() : [] };
+}
+
+/** สีหรือลักษณะที่ต้องเก็บรูปไว้เสมอ (เผื่อแพทย์ต้องดู) — เกณฑ์แบบกว้างกว่าในแอป เพื่อไม่ลบรูปสำคัญ */
+var KEEP_COLORS = ['s01', 's02', 's03', 's04', 's10', 's11', 'u3', 'u4', 'u5'];
+var KEEP_CONSISTENCY = ['watery', 'mucus', 'hard'];
+
+function recordKeepMap_() {
+  var sh = sheet_(SHEETS.LOGS);
+  var last = sh.getLastRow();
+  var map = {};
+  if (last < 2) return map;
+  sh.getRange(2, 1, last - 1, LOG_COLS.length).getValues().forEach(function (r) {
+    var keep = KEEP_COLORS.indexOf(String(r[6])) >= 0 || KEEP_CONSISTENCY.indexOf(String(r[7])) >= 0;
+    map[String(r[0])] = { keep: keep, deleted: r[18] === true || r[18] === 'TRUE' };
+  });
+  return map;
+}
+
+function uploadPhoto_(req) {
+  var id = cleanStr_(req.photoId, 64);
+  if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) return { ok: false, error: 'bad_photo_id' };
+  var mime = req.mime === 'image/png' ? 'image/png' : 'image/jpeg';
+  var b64 = String(req.data || '').replace(/^data:[^,]+,/, '');
+  if (!b64 || b64.length > MAX_PHOTO_BYTES * 1.4) return { ok: false, error: 'photo_too_large' };
+  var bytes = Utilities.base64Decode(b64);
+  var ts = Number(req.ts) || Date.now();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    var p = photoRows_();
+    for (var i = 0; i < p.rows.length; i++) {
+      if (String(p.rows[i][0]) === id && !p.rows[i][8]) return { ok: true, photoId: id, driveId: String(p.rows[i][1]), duplicate: true };
+    }
+    var name = Utilities.formatDate(new Date(ts), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmm') + '_' + cleanStr_(req.color, 8) + '_' + id + (mime === 'image/png' ? '.png' : '.jpg');
+    var file = photoFolder_().createFile(Utilities.newBlob(bytes, mime, name));
+    file.setDescription('record:' + cleanStr_(req.recordId, 64));
+    p.sh.getRange(p.sh.getLastRow() + 1, 1, 1, PHOTO_COLS.length).setValues([[
+      id, file.getId(), cleanStr_(req.recordId, 64), ts, new Date(ts), bytes.length, req.keep ? true : false, new Date(), false
+    ]]);
+    return { ok: true, photoId: id, driveId: file.getId() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getPhoto_(req) {
+  var id = cleanStr_(req.photoId, 64);
+  var p = photoRows_();
+  for (var i = 0; i < p.rows.length; i++) {
+    if (String(p.rows[i][0]) === id) {
+      if (p.rows[i][8]) return { ok: false, error: 'photo_deleted' };
+      var blob = DriveApp.getFileById(String(p.rows[i][1])).getBlob();
+      return { ok: true, photoId: id, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+    }
+  }
+  return { ok: false, error: 'photo_not_found' };
+}
+
+function deletePhoto_(req) {
+  var id = cleanStr_(req.photoId, 64);
+  var p = photoRows_();
+  for (var i = 0; i < p.rows.length; i++) {
+    if (String(p.rows[i][0]) === id && !p.rows[i][8]) {
+      try { DriveApp.getFileById(String(p.rows[i][1])).setTrashed(true); } catch (e) { /* ลบไปแล้ว */ }
+      p.sh.getRange(i + 2, 9).setValue(true);
+      return { ok: true };
+    }
+  }
+  return { ok: true, missing: true };
+}
+
+/** ย้ายรูปที่ "ปกติ" และเก่ากว่า N วันไปถังขยะ Drive (กู้คืนได้ 30 วัน) · days ว่าง = ใช้ค่าจากตั้งค่า · 0 = ไม่ลบ */
+function cleanupPhotos_(days) {
+  var d = days === undefined || days === null || days === '' ? null : Number(days);
+  if (d === null) {
+    var st = syncSettings_(null);
+    d = st && st.photoRetentionDays !== '' ? Number(st.photoRetentionDays) : 30;
+  }
+  if (!(d > 0)) return { ok: true, trashed: 0, kept: 0, days: 0 };
+  var cutoff = Date.now() - d * 86400000;
+  var keepMap = recordKeepMap_();
+  var p = photoRows_();
+  var trashed = 0, kept = 0, freed = 0;
+  for (var i = 0; i < p.rows.length; i++) {
+    var r = p.rows[i];
+    if (r[8]) continue;
+    var rec = keepMap[String(r[2])];
+    var keep = r[6] === true || r[6] === 'TRUE' || (rec && rec.keep && !rec.deleted);
+    if (Number(r[3]) >= cutoff) continue;
+    if (keep) { kept++; continue; }
+    try { DriveApp.getFileById(String(r[1])).setTrashed(true); } catch (e) { /* ไม่มีไฟล์แล้ว */ }
+    p.sh.getRange(i + 2, 9).setValue(true);
+    trashed++; freed += Number(r[5]) || 0;
+  }
+  return { ok: true, trashed: trashed, kept: kept, freedBytes: freed, days: d };
+}
+
+function photoStats_() {
+  var p = photoRows_();
+  var keepMap = recordKeepMap_();
+  var count = 0, bytes = 0, keep = 0;
+  p.rows.forEach(function (r) {
+    if (r[8]) return;
+    count++; bytes += Number(r[5]) || 0;
+    var rec = keepMap[String(r[2])];
+    if (r[6] === true || r[6] === 'TRUE' || (rec && rec.keep && !rec.deleted)) keep++;
+  });
+  var used = null, limit = null;
+  try { used = DriveApp.getStorageUsed(); limit = DriveApp.getStorageLimit(); } catch (e) { /* ไม่มีสิทธิ์อ่านโควตา */ }
+  return { ok: true, count: count, bytes: bytes, keep: keep, driveUsed: used, driveLimit: limit, folderUrl: photoFolder_().getUrl() };
 }

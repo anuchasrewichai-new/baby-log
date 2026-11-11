@@ -1,9 +1,9 @@
 // db.js — เก็บข้อมูลในเครื่องด้วย IndexedDB (ใช้หน่วยความจำแทนถ้าเบราว์เซอร์ไม่รองรับ)
 
 const DB_NAME = 'baby-log';
-const DB_VER = 1;
+const DB_VER = 2;
 let dbp = null;
-const mem = { records: new Map(), kv: new Map() };
+const mem = { records: new Map(), kv: new Map(), photos: new Map() };
 let useMem = false;
 
 function open() {
@@ -15,6 +15,7 @@ function open() {
         const db = req.result;
         if (!db.objectStoreNames.contains('records')) db.createObjectStore('records', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+        if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => { useMem = true; resolve(null); };
@@ -65,10 +66,27 @@ export const db = {
     if (useMem) { mem.kv.set(key, val); return; }
     await tx('kv', 'readwrite', (s) => (s ? s.put(val, key) : mem.kv.set(key, val)));
   },
+  async getPhoto(id) {
+    const v = await tx('photos', 'readonly', (s) => (s ? s.get(id) : null));
+    return useMem ? mem.photos.get(id) : v;
+  },
+  async putPhoto(p) {
+    if (useMem) { mem.photos.set(p.id, p); return; }
+    await tx('photos', 'readwrite', (s) => (s ? s.put(p) : mem.photos.set(p.id, p)));
+  },
+  async deletePhoto(id) {
+    if (useMem) { mem.photos.delete(id); return; }
+    await tx('photos', 'readwrite', (s) => s && s.delete(id));
+  },
+  async allPhotos() {
+    const v = await tx('photos', 'readonly', (s) => (s ? s.getAll() : null));
+    return useMem ? [...mem.photos.values()] : v || [];
+  },
   async clearAll() {
-    if (useMem) { mem.records.clear(); mem.kv.clear(); return; }
+    if (useMem) { mem.records.clear(); mem.kv.clear(); mem.photos.clear(); return; }
     await tx('records', 'readwrite', (s) => s && s.clear());
     await tx('kv', 'readwrite', (s) => s && s.clear());
+    await tx('photos', 'readwrite', (s) => s && s.clear());
   },
   isMemoryOnly() { return useMem; },
   async persist() {

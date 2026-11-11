@@ -27,6 +27,7 @@ class Range {
     }));
     return this;
   }
+  setValue(v) { return this.setValues([[v]]); }
   clearContent() { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) if (this.sheet.data[this.r - 1 + i]) this.sheet.data[this.r - 1 + i][this.c - 1 + j] = ''; return this; }
   setFontWeight() { return this; }
   setNumberFormat(f) { this.sheet.textFmt = f === '@'; return this; }
@@ -45,12 +46,26 @@ class Spreadsheet {
 
 export function loadGas() {
   const ss = new Spreadsheet();
+  const drive = makeDrive();
   const props = {};
   const ctx = {
     SpreadsheetApp: { getActiveSpreadsheet: () => ss },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); } }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
-    Utilities: { getUuid: () => crypto.randomUUID() },
+    Utilities: {
+      getUuid: () => crypto.randomUUID(),
+      base64Decode: (b) => Array.from(Buffer.from(b, 'base64')),
+      base64Encode: (bytes) => Buffer.from(bytes).toString('base64'),
+      newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
+      formatDate: (d, tz, f) => d.toISOString().slice(0, 16).replace('T', '_').replace(':', '')
+    },
+    Session: { getScriptTimeZone: () => 'Asia/Bangkok' },
+    DriveApp: drive.api,
+    ScriptApp: {
+      getProjectTriggers: () => drive.triggers,
+      deleteTrigger: (t) => { drive.triggers = drive.triggers.filter((x) => x !== t); },
+      newTrigger: (fn) => { const b = { timeBased: () => b, everyDays: () => b, atHour: () => b, create: () => { const t = { getHandlerFunction: () => fn }; drive.triggers.push(t); return t; } }; return b; }
+    },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (t) => ({ text: t, setMimeType() { return this; } }) },
     Logger: { log() {} },
     Date, JSON, Math, Number, String, Object, Array, isFinite
@@ -58,5 +73,23 @@ export function loadGas() {
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(here, '../apps-script/Code.gs'), 'utf8'), ctx);
   const post = (body) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).text);
-  return { ctx, ss, props, post };
+  return { ctx, ss, props, post, drive };
+}
+
+function makeDrive() {
+  const files = new Map(); const folders = new Map(); let n = 0;
+  const drive = { files, folders, triggers: [], used: 4.9e9, limit: 15e9 };
+  const mkFile = (blob) => {
+    const id = 'f' + (++n);
+    const f = { id, blob, trashed: false, desc: '', getId: () => id, setDescription(d) { f.desc = d; return f; }, setTrashed(t) { f.trashed = t; return f; }, isTrashed: () => f.trashed,
+      getBlob: () => ({ getBytes: () => blob.bytes, getContentType: () => blob.mime }) };
+    files.set(id, f); return f;
+  };
+  drive.api = {
+    createFolder: (name) => { const id = 'folder' + (++n); const fo = { id, name, trashed: false, getId: () => id, setDescription() { return fo; }, isTrashed: () => fo.trashed, getUrl: () => 'https://drive.google.com/drive/folders/' + id, createFile: (blob) => mkFile(blob) }; folders.set(id, fo); return fo; },
+    getFolderById: (id) => { if (!folders.has(id)) throw new Error('no folder'); return folders.get(id); },
+    getFileById: (id) => { if (!files.has(id)) throw new Error('no file'); return files.get(id); },
+    getStorageUsed: () => drive.used, getStorageLimit: () => drive.limit
+  };
+  return drive;
 }
