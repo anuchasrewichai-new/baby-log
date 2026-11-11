@@ -36,7 +36,7 @@ async function call(cfg, body, timeoutMs = 25000) {
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch (e) { throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็น JSON — ตรวจว่า URL เป็นของ Web app และตั้งค่า Who has access: Anyone'); }
-    if (!data.ok) throw new Error(data.error === 'unauthorized' ? 'รหัสครอบครัวไม่ถูกต้อง' : (data.message || ('เซิร์ฟเวอร์ตอบผิดพลาด: ' + (data.detail || data.error))));
+    if (!data.ok) throw new Error(data.error === 'unauthorized' ? 'รหัสครอบครัวไม่ถูกต้อง' : (data.message || SERVER_ERR[data.error] || ('เซิร์ฟเวอร์ตอบผิดพลาด: ' + (data.detail || data.error))));
     return data;
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('เชื่อมต่อนานเกินไป ลองใหม่อีกครั้ง');
@@ -46,6 +46,13 @@ async function call(cfg, body, timeoutMs = 25000) {
 }
 
 /** เรียก API ด้วยค่าที่ตั้งไว้ (ใช้กับรูปถ่าย) */
+const SERVER_ERR = {
+  ai_not_configured: 'ยังไม่ได้ใส่ API key ใน Apps Script (ดูวิธีใน README หัวข้อ Phase 5)',
+  ai_quota: 'ใช้ AI ครบโควตาของวันนี้แล้ว (ปรับได้ที่ AI_DAILY_LIMIT)',
+  ai_busy: 'บริการ AI ไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่',
+  photo_too_large: 'รูปใหญ่เกินไป'
+};
+
 export async function api(action, body = {}, timeoutMs = 45000) {
   const cfg = await getConfig();
   if (!cfg.url || !cfg.key) throw new Error('ยังไม่ได้ตั้งค่าซิงก์');
