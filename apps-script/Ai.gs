@@ -19,7 +19,9 @@
  */
 
 var AI_DEFAULT_LIMIT = 30;
-var GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-flash-latest'];
+// เรียงตามความเสถียร (ทดสอบ 11 พ.ย. 2569: รุ่นใหม่สุดมักถูกใช้หนาแน่น ตอบ 503 หรือค้างหลายนาที)
+var GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
+var MODEL_COOLDOWN_MS = 60 * 60 * 1000;
 var CLAUDE_MODELS = ['claude-haiku-5-5', 'claude-sonnet-5-5'];
 var STOOL_IDS = ['s01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 's11'];
 var URINE_IDS = ['u1', 'u2', 'u3', 'u4', 'u5'];
@@ -102,20 +104,37 @@ function geminiModels_(key) {
   } catch (e) { return []; }
 }
 
+/** รุ่นที่เพิ่งตอบ 5xx (ไม่ว่าง) จะถูกข้ามชั่วคราว 1 ชม. */
+function modelCooling_(p, m) { return Number(p.getProperty('AI_COOL_' + m) || 0) > Date.now(); }
+function coolModel_(p, m) { p.setProperty('AI_COOL_' + m, String(Date.now() + MODEL_COOLDOWN_MS)); }
+
+function geminiOrder_(config, p) {
+  if (config.model) return [config.model];
+  var ok = p.getProperty('AI_MODEL_OK');
+  var list = uniq_([ok].concat(GEMINI_MODELS));
+  if (!ok) {
+    // ยังไม่เคยสำเร็จ: เช็กกับรายชื่อรุ่นจริงของคีย์นี้ ตัดรุ่นที่ไม่มี และเพิ่มรุ่นอื่นต่อท้าย
+    var avail = geminiModels_(config.key);
+    if (avail.length) list = list.filter(function (m) { return avail.indexOf(m) >= 0 || m === 'gemini-flash-latest'; }).concat(avail);
+    list = uniq_(list);
+  }
+  var fresh = list.filter(function (m) { return !modelCooling_(p, m); });
+  return fresh.length ? fresh : list;
+}
+
 function callGemini_(config, system, parts, schema) {
   var p = PropertiesService.getScriptProperties();
-  var ok = p.getProperty('AI_MODEL_OK');
-  var models = config.model ? [config.model] : uniq_([ok].concat(ok ? [] : geminiModels_(config.key)).concat(GEMINI_MODELS));
+  var models = geminiOrder_(config, p);
   var body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: parts.map(function (x) {
       return x.image ? { inline_data: { mime_type: x.image.mime, data: x.image.data } } : { text: x.text };
     }) }],
-    // จำกัดความยาวคำตอบ กัน AI วนซ้ำจนคำขอค้างหลายนาที
+    // จำกัดความยาวคำตอบ กัน AI วนซ้ำจนคำขอค้าง
     generationConfig: { responseMimeType: 'application/json', responseJsonSchema: schema, maxOutputTokens: 4096 }
   };
   var lastErr = '';
-  for (var i = 0; i < models.length; i++) {
+  for (var i = 0; i < models.length && i < 3; i++) {
     var m = models[i];
     var r = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(m) + ':generateContent', {
       method: 'post', contentType: 'application/json', muteHttpExceptions: true,
@@ -124,7 +143,14 @@ function callGemini_(config, system, parts, schema) {
     var code = r.getResponseCode(), txt = r.getContentText();
     if (code === 404 || (code === 400 && /not found|is not supported|unknown model|not available/i.test(txt))) {
       lastErr = 'model ' + m + ' unavailable';
-      if (m === ok) p.deleteProperty('AI_MODEL_OK');
+      if (m === p.getProperty('AI_MODEL_OK')) p.deleteProperty('AI_MODEL_OK');
+      continue;
+    }
+    if (code >= 500) {
+      // รุ่นนี้ไม่ว่าง → พักไว้ แล้วลองรุ่นถัดไป
+      lastErr = m + ' ' + code + ': ' + errText_(txt);
+      coolModel_(p, m);
+      if (m === p.getProperty('AI_MODEL_OK')) p.deleteProperty('AI_MODEL_OK');
       continue;
     }
     if (code === 429) throw new Error('ai_rate_limited');
@@ -137,7 +163,7 @@ function callGemini_(config, system, parts, schema) {
     p.setProperty('AI_MODEL_OK', m);
     return { json: parseJson_(out), model: m };
   }
-  throw new Error('ai_no_model: ' + lastErr);
+  throw new Error(/ 5\d\d: /.test(lastErr) ? 'ai_busy' : 'ai_no_model: ' + lastErr);
 }
 
 function errText_(txt) {
@@ -184,7 +210,8 @@ function aiError_(e) {
     ai_rate_limited: 'AI ถูกเรียกถี่เกินไป ลองใหม่ในอีกสักครู่',
     ai_bad_key: 'API key ไม่ถูกต้อง ตรวจ GEMINI_API_KEY ใน Script Properties',
     ai_blocked: 'AI ไม่ตอบคำขอนี้ ลองถ่ายรูปใหม่หรือถามใหม่',
-    ai_bad_json: 'AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง'
+    ai_bad_json: 'AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง',
+    ai_busy: 'บริการ AI ไม่ว่างชั่วคราว ลองใหม่ในอีกสักครู่'
   };
   for (var k in map) if (m.indexOf(k) === 0) return { ok: false, error: k, message: map[k] };
   return { ok: false, error: 'ai_failed', message: 'เรียก AI ไม่สำเร็จ (' + m.slice(0, 160) + ')' };
@@ -348,19 +375,15 @@ function aiText_(req) {
 
 /** เลือกฟังก์ชัน testAi แล้วกด "เรียกใช้" · ดูผลในบันทึกการดำเนินการ · ไม่แสดงคีย์ */
 function testAi() {
-  var c = aiConfig_();
-  console.log('provider=' + c.provider + ' hasKey=' + !!c.key + ' model=' + (c.model || '(auto)') + ' ok=' + PropertiesService.getScriptProperties().getProperty('AI_MODEL_OK'));
-  if (!c.key || c.provider !== 'gemini') return;
+  var c = aiConfig_(), p = PropertiesService.getScriptProperties();
+  p.deleteProperty('AI_MODEL_OK');
+  p.getKeys().forEach(function (k) { if (k.indexOf('AI_COOL_') === 0) p.deleteProperty(k); });
+  console.log('provider=' + c.provider + ' hasKey=' + !!c.key + ' model=' + (c.model || '(auto)'));
+  if (!c.key) return;
+  if (c.provider === 'gemini') console.log('models: ' + geminiOrder_(c, p).join(', '));
   var t = Date.now();
-  var ms = geminiModels_(c.key);
-  console.log('models (' + (Date.now() - t) + ' ms): ' + ms.join(', '));
-  var schema = { type: 'object', properties: { answer_th: { type: 'string' } }, required: ['answer_th'] };
-  [ms[0], 'gemini-flash-latest'].forEach(function (m) {
-    if (!m) return;
-    t = Date.now();
-    try {
-      var r = callGemini_({ key: c.key, model: m }, 'ตอบสั้นๆ', [{ text: 'ทักทาย 1 ประโยค' }], schema);
-      console.log(m + ' OK ' + (Date.now() - t) + ' ms: ' + JSON.stringify(r.json).slice(0, 120));
-    } catch (e) { console.log(m + ' FAIL ' + (Date.now() - t) + ' ms: ' + e.message); }
-  });
+  try {
+    var r = aiCall_(c, 'ตอบสั้นๆ', [{ text: 'ทักทาย 1 ประโยค' }], { type: 'object', properties: { answer_th: { type: 'string' } }, required: ['answer_th'] });
+    console.log('OK ' + r.model + ' ' + (Date.now() - t) + ' ms: ' + JSON.stringify(r.json).slice(0, 120));
+  } catch (e) { console.log('FAIL ' + (Date.now() - t) + ' ms: ' + e.message); }
 }
