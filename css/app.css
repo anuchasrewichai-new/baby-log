@@ -386,3 +386,4 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .rp-ai { background: #F6F4FB; border-radius: 10px; padding: 10px 12px; }
 .rp-ai h2 { color: #4B4598; } .rp-ai p { margin: 0 0 4px; }
 .rp-ai-note { color: #9A3A0C; font-weight: 700; }
+.backup-box { display: flex; flex-direction: column; gap: 8px; }

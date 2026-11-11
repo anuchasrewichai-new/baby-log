@@ -40,7 +40,7 @@ with sync_playwright() as p:
     page.click('button[type=submit]'); page.wait_for_selector('.quick-3')
     seed(); page.goto(BASE + '/#/settings'); page.wait_for_timeout(800); page.set_input_files('input[data-act=import]', '/tmp/seed4.json'); page.wait_for_timeout(600)
     # วันนี้: อึปกติพร้อมรูป + อึสีซีดพร้อมรูป (เพื่อดูรูปที่ถูกเตือนในรายงาน)
-    for color, img in [('s06', '/tmp/phone-photo.jpg'), ('s02', '/home/claude/baby-log/art/out/stool-02-clay.jpg')]:
+    for color, img in [('s06', '/tmp/phone-photo.jpg'), ('s02', 'img/stool-02-clay.jpg')]:
         page.goto(BASE + '/#/log/poop'); page.set_input_files('.photo-btn input[data-act=photo-input]', img); page.wait_for_selector('.compare img')
         page.click(f'[data-act=pick-color][data-v={color}]'); page.click('[data-act=save]'); page.wait_for_selector('.quick-3')
 

@@ -12,7 +12,7 @@
  * ข้อมูลอยู่ใน Google Sheet ของคุณเท่านั้น
  */
 
-var API_VERSION = '1.2.0';
+var API_VERSION = '1.3.0';
 var SHEETS = { LOGS: 'Logs', SETTINGS: 'Settings', CONFIG: 'Config', PHOTOS: 'Photos' };
 var PHOTO_COLS = ['PhotoID', 'DriveFileID', 'RecordID', 'Ts', 'Time', 'Bytes', 'Keep', 'CreatedAt', 'Trashed'];
 var PHOTO_FOLDER_NAME = 'Baby Log Photos';
@@ -35,6 +35,8 @@ function setup() {
   writeConfigSheet_(key);
   photoFolder_();
   installDailyCleanup();
+  backupFolder_();
+  installWeeklyBackup();
   Logger.log('ติดตั้งเสร็จ รหัสครอบครัว: ' + key);
   return key;
 }
@@ -49,6 +51,56 @@ function installDailyCleanup() {
 
 function dailyCleanup() {
   return cleanupPhotos_(null);
+}
+
+/* ======================= สำรองข้อมูลอัตโนมัติ (Phase 6) ======================= */
+var BACKUP_FOLDER_NAME = 'Baby Log Backups';
+var BACKUP_KEEP = 8;
+
+/** ตั้งเวลาสำรอง Google Sheet ทุกวันอาทิตย์ ตี 2 (เรียกจาก setup แล้ว) */
+function installWeeklyBackup() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'weeklyBackup') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('weeklyBackup').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(2).create();
+}
+
+function backupFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('BACKUP_FOLDER_ID');
+  if (id) { try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (e) { /* สร้างใหม่ */ } }
+  var folder = DriveApp.createFolder(BACKUP_FOLDER_NAME);
+  folder.setDescription('สำเนา Google Sheet ของแอปบันทึกลูกน้อย (เก็บ ' + BACKUP_KEEP + ' ชุดล่าสุด)');
+  props.setProperty('BACKUP_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/** คัดลอกไฟล์ Sheet ทั้งไฟล์ไปโฟลเดอร์สำรอง และลบสำเนาเก่าที่เกิน 8 ชุด (ไปถังขยะ) · เรียกเองได้ทุกเมื่อ */
+function weeklyBackup() {
+  var ss = ss_();
+  var folder = backupFolder_();
+  var name = 'Baby Log Backup ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
+  var copy = DriveApp.getFileById(ss.getId()).makeCopy(name, folder);
+  var props = PropertiesService.getScriptProperties();
+  var list = [];
+  try { list = JSON.parse(props.getProperty('BACKUP_IDS') || '[]'); } catch (e) { list = []; }
+  list.push(copy.getId());
+  while (list.length > BACKUP_KEEP) {
+    var old = list.shift();
+    try { DriveApp.getFileById(old).setTrashed(true); } catch (e) { /* ลบไปแล้ว */ }
+  }
+  props.setProperty('BACKUP_IDS', JSON.stringify(list));
+  props.setProperty('LAST_BACKUP_AT', String(Date.now()));
+  return { ok: true, fileId: copy.getId(), name: name, kept: list.length };
+}
+
+function backupStatus_() {
+  var p = PropertiesService.getScriptProperties();
+  var list = [];
+  try { list = JSON.parse(p.getProperty('BACKUP_IDS') || '[]'); } catch (e) { list = []; }
+  var url = null;
+  try { url = backupFolder_().getUrl(); } catch (e) { /* ไม่มีสิทธิ์ Drive */ }
+  return { ok: true, lastAt: Number(p.getProperty('LAST_BACKUP_AT')) || null, count: list.length, folderUrl: url };
 }
 
 /** สร้างรหัสครอบครัวใหม่ (อุปกรณ์เดิมต้องใส่รหัสใหม่) */
@@ -135,6 +187,8 @@ function doPost(e) {
       case 'deletePhoto': return json_(deletePhoto_(req));
       case 'photoStats': return json_(photoStats_());
       case 'cleanupPhotos': return json_(cleanupPhotos_(req.days));
+      case 'backupStatus': return json_(backupStatus_());
+      case 'backupNow': return json_(weeklyBackup());
       case 'aiStatus': return json_(aiStatus_());
       case 'aiPhoto': return json_(aiPhoto_(req));
       case 'aiText': return json_(aiText_(req));

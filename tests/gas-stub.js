@@ -40,6 +40,7 @@ class Sheet {
 }
 class Spreadsheet {
   constructor() { this.sheets = {}; }
+  getId() { return 'ss-main'; }
   getSheetByName(n) { return this.sheets[n] || null; }
   insertSheet(n) { return (this.sheets[n] = new Sheet(n)); }
 }
@@ -66,7 +67,8 @@ export function loadGas() {
     ScriptApp: {
       getProjectTriggers: () => drive.triggers,
       deleteTrigger: (t) => { drive.triggers = drive.triggers.filter((x) => x !== t); },
-      newTrigger: (fn) => { const b = { timeBased: () => b, everyDays: () => b, atHour: () => b, create: () => { const t = { getHandlerFunction: () => fn }; drive.triggers.push(t); return t; } }; return b; }
+      WeekDay: { SUNDAY: 'SUNDAY' },
+      newTrigger: (fn) => { const b = { timeBased: () => b, everyDays: () => b, onWeekDay: () => b, atHour: () => b, create: () => { const t = { getHandlerFunction: () => fn }; drive.triggers.push(t); return t; } }; return b; }
     },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (t) => ({ text: t, setMimeType() { return this; } }) },
     Logger: { log() {} },
@@ -91,7 +93,10 @@ function makeDrive() {
   drive.api = {
     createFolder: (name) => { const id = 'folder' + (++n); const fo = { id, name, trashed: false, getId: () => id, setDescription() { return fo; }, isTrashed: () => fo.trashed, getUrl: () => 'https://drive.google.com/drive/folders/' + id, createFile: (blob) => mkFile(blob) }; folders.set(id, fo); return fo; },
     getFolderById: (id) => { if (!folders.has(id)) throw new Error('no folder'); return folders.get(id); },
-    getFileById: (id) => { if (!files.has(id)) throw new Error('no file'); return files.get(id); },
+    getFileById: (id) => {
+      if (id === 'ss-main') return { makeCopy: (name, folder) => { const f = mkFile({ bytes: [], mime: 'sheet', name }); f.folder = folder.id; return f; } };
+      if (!files.has(id)) throw new Error('no file'); return files.get(id);
+    },
     getStorageUsed: () => drive.used, getStorageLimit: () => drive.limit
   };
   return drive;

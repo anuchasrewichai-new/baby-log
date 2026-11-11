@@ -10,11 +10,11 @@ const rec = (id, color, ts, extra = {}) => ({ id, type: 'poop', ts, color, consi
 test('setup สร้างโฟลเดอร์รูป แผ่นงาน Photos และตั้งเวลาล้างรูปรายวัน', () => {
   const { ss, drive, ctx } = setup();
   assert.ok(ss.getSheetByName('Photos'));
-  assert.equal(drive.folders.size, 1);
-  assert.equal(drive.triggers.length, 1);
+  assert.equal(drive.folders.size, 2, 'โฟลเดอร์รูป + โฟลเดอร์สำรอง');
+  assert.ok(drive.triggers.some((t) => t.getHandlerFunction() === 'dailyCleanup'));
   ctx.setup();
-  assert.equal(drive.triggers.length, 1, 'เรียก setup ซ้ำไม่สร้าง trigger ซ้ำ');
-  assert.equal(drive.folders.size, 1, 'ไม่สร้างโฟลเดอร์ซ้ำ');
+  assert.equal(drive.triggers.length, 2, 'เรียก setup ซ้ำไม่สร้าง trigger ซ้ำ');
+  assert.equal(drive.folders.size, 2, 'ไม่สร้างโฟลเดอร์ซ้ำ');
 });
 
 test('อัปโหลดรูป แล้วอีกเครื่องดึงรูปได้ตรงกัน และอัปโหลดซ้ำไม่สร้างไฟล์ซ้ำ', () => {

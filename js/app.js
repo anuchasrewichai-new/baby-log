@@ -7,7 +7,7 @@ import * as P from './photos.js';
 import * as Rep from './report.js';
 import * as AI from './ai.js';
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.5.0';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 
@@ -324,6 +324,7 @@ function viewHome() {
     <header class="home-head"><div><div class="muted small">${esc(ageText())}${ftLabel ? ' · ' + ftLabel : ''}</div><h1>${esc(name)}</h1></div>${syncChip()}</header>
     ${S.swWaiting ? `<button type="button" class="banner banner-info" data-act="sw-update">มีเวอร์ชันใหม่ แตะเพื่ออัปเดต</button>` : ''}
     ${alertBanners()}
+    ${!S.syncCfg.url && live().length >= 20 && Date.now() - (S.lastExportAt || S.firstUseAt || Date.now()) > 7 * 86400000 ? `<a class="banner banner-info" href="#/settings">${icon('alert', 's')}<span>ข้อมูลอยู่ในเครื่องนี้เท่านั้น และยังไม่ได้สำรองเกิน 7 วัน — แตะเพื่อตั้งค่าซิงก์หรือดาวน์โหลดไฟล์สำรอง</span></a>` : ''}
     ${status}${timer}
     ${S.sleepTimer ? `<a class="banner banner-sleep" href="#/log/sleep">${icon('moon')}<span>ลูกกำลังนอน · <b data-tick="sleep-run"></b> · แตะเมื่อตื่น</span></a>` : ''}
     <section class="grid2">
@@ -730,7 +731,8 @@ function viewSettings() {
       ${standalone ? '<p class="small">ติดตั้งแล้ว ✓</p>' : S.installEvt ? '<button type="button" class="btn btn-primary" data-act="install">ติดตั้งลงหน้าจอหลัก</button>' : isIOS ? '<p class="small">ใน Safari กดปุ่ม <b>แชร์</b> (สี่เหลี่ยมมีลูกศรขึ้น) แล้วเลือก <b>เพิ่มไปยังหน้าจอโฮม</b></p>' : '<p class="small">เปิดเมนูของเบราว์เซอร์ (⋮) แล้วเลือก <b>ติดตั้งแอป</b> หรือ <b>เพิ่มลงในหน้าจอหลัก</b></p>'}
     </section>
 
-    <section class="card form"><h2 class="card-title">สำรองข้อมูล</h2>
+    <section class="card form" id="backup"><h2 class="card-title">สำรองข้อมูล</h2>
+      <div class="backup-box">${backupInfo()}</div>
       <div class="btn-row"><button type="button" class="btn" data-act="export">ดาวน์โหลดไฟล์สำรอง</button><label class="btn">นำเข้าไฟล์สำรอง<input type="file" accept="application/json,.json" data-act="import" hidden></label></div>
       <p class="small muted">ไฟล์ .json เก็บข้อมูลทั้งหมดในเครื่องนี้ ใช้ย้ายเครื่องได้แม้ไม่ได้ตั้งค่าซิงก์</p>
       <button type="button" class="btn btn-danger-outline" data-act="reset">${S.confirmReset ? 'แตะอีกครั้งเพื่อลบข้อมูลในเครื่องนี้ทั้งหมด' : 'ลบข้อมูลในเครื่องนี้'}</button>
@@ -859,6 +861,7 @@ const actions = {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = `baby-log-${R.localDate(Date.now())}.json`;
     document.body.appendChild(a); a.click(); a.remove();
+    await db.set('lastExportAt', Date.now()); S.lastExportAt = Date.now();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   },
   async reset() {
@@ -868,6 +871,9 @@ const actions = {
   },
   async install() { if (S.installEvt) { S.installEvt.prompt(); await S.installEvt.userChoice; S.installEvt = null; render(); } },
   'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); },
+  async 'backup-now'() {
+    try { toast('กำลังสำรอง…'); const r = await Sync.api('backupNow', {}, 60000); toast('สำรองแล้ว: ' + r.name); await loadBackup(); } catch (e) { toast(e.message); }
+  },
   async 'ai-photo'() {
     const d = S.draft, id = d.photoId; if (!id) return;
     S.ai.photo[id] = { loading: true }; render();
@@ -960,6 +966,21 @@ const actions = {
   }
 };
 
+function backupInfo() {
+  if (!S.syncCfg.url) return '<p class="small txt-1">ยังไม่ได้ตั้งค่าซิงก์ — ข้อมูลอยู่ในเครื่องนี้เท่านั้น แนะนำดาวน์โหลดไฟล์สำรองทุกสัปดาห์</p>';
+  const b = S.backup;
+  if (!b) return '<p class="small muted">กำลังดูสถานะการสำรองอัตโนมัติ…</p>';
+  if (b.ok === false) return `<p class="small muted">${esc(b.message || 'ดูสถานะไม่ได้')}</p>`;
+  return `<div class="row-between small"><span>สำรอง Google Sheet อัตโนมัติ ทุกวันอาทิตย์</span><b>${b.count} ชุด</b></div>
+    <p class="small muted">${b.lastAt ? `ล่าสุด ${dateThFull(R.localDate(b.lastAt))} ${hm(b.lastAt)}` : 'ยังไม่เคยสำรอง'} · เก็บ 8 ชุดล่าสุดในโฟลเดอร์ Baby Log Backups</p>
+    <div class="btn-row"><button type="button" class="btn" data-act="backup-now">สำรองตอนนี้</button>${b.folderUrl ? `<a class="btn" href="${esc(b.folderUrl)}" target="_blank" rel="noopener">เปิดโฟลเดอร์สำรอง</a>` : ''}</div>`;
+}
+async function loadBackup() {
+  if (!S.syncCfg.url) return;
+  try { S.backup = await Sync.api('backupStatus', {}, 20000); } catch (e) { S.backup = { ok: false, message: e.message }; }
+  const box = document.querySelector('#backup .backup-box');
+  if (box && route().parts[0] === 'settings') box.innerHTML = backupInfo();
+}
 function aiSettings() {
   const p = S.ai.prefs, st = S.ai.status;
   let status = '';
@@ -1189,7 +1210,7 @@ document.addEventListener('submit', async (ev) => {
   }
 });
 
-window.addEventListener('hashchange', () => { S.viewer = null; setTimeout(checkAlerts, 0); if (route().parts[0] === 'settings') { loadPhotoInfo(); loadAiStatus(); } if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
+window.addEventListener('hashchange', () => { S.viewer = null; setTimeout(checkAlerts, 0); if (route().parts[0] === 'settings') { loadPhotoInfo(); loadAiStatus(); loadBackup(); } if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
 window.addEventListener('online', () => scheduleSync(300));
 window.addEventListener('offline', () => { S.sync = { ...S.sync, status: 'offline' }; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { recompute(); if (route().parts[0] !== 'log') render(); scheduleSync(500); } });
@@ -1212,6 +1233,9 @@ async function init() {
   S.feedTimer = await db.get('feedTimer');
   S.sleepTimer = await db.get('sleepTimer');
   S.reportNotes = await db.get('reportNotes', '');
+  S.lastExportAt = await db.get('lastExportAt', 0);
+  S.firstUseAt = await db.get('firstUseAt', 0);
+  if (!S.firstUseAt) { S.firstUseAt = Date.now(); await db.set('firstUseAt', S.firstUseAt); }
   S.ai.prefs = await AI.prefs();
   S.ai.trend = await AI.cachedTrend();
   S.ai.report = await AI.cachedReport();
@@ -1226,7 +1250,7 @@ async function init() {
   P.pruneLocal(S.settings, S.records).catch(() => {});
   checkAlerts();
   setInterval(checkAlerts, 30000);
-  if (route().parts[0] === 'settings') loadPhotoInfo();
+  if (route().parts[0] === 'settings') { loadPhotoInfo(); loadBackup(); }
   scheduleSync(800);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     try {

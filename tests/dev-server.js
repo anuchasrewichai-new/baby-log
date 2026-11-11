@@ -28,8 +28,14 @@ gas.ai.handler = (url, body) => {
 const port = Number(process.argv[2] || 8765);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
 
+// BASE_PATH=/baby-log จำลองการเสิร์ฟใต้โฟลเดอร์ย่อยแบบ GitHub Pages (ไฟล์นอกโฟลเดอร์ย่อย = 404)
+const BASE_PATH = process.env.BASE_PATH || '';
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (BASE_PATH) {
+    if (!url.pathname.startsWith(BASE_PATH + '/') && url.pathname !== BASE_PATH) { res.writeHead(404); res.end('outside base path: ' + url.pathname); return; }
+    url.pathname = url.pathname.slice(BASE_PATH.length) || '/';
+  }
   if (url.pathname === '/api') {
     if (req.method === 'GET') { res.end(gas.ctx.doGet().text); return; }
     let body = '';
