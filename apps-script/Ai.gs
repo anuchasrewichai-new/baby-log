@@ -343,3 +343,24 @@ function aiText_(req) {
     return out;
   } catch (e) { return aiError_(e); }
 }
+
+/* ======================= ตรวจการเชื่อมต่อ AI (กด Run ในหน้าแก้ไข) ======================= */
+
+/** เลือกฟังก์ชัน testAi แล้วกด "เรียกใช้" · ดูผลในบันทึกการดำเนินการ · ไม่แสดงคีย์ */
+function testAi() {
+  var c = aiConfig_();
+  console.log('provider=' + c.provider + ' hasKey=' + !!c.key + ' model=' + (c.model || '(auto)') + ' ok=' + PropertiesService.getScriptProperties().getProperty('AI_MODEL_OK'));
+  if (!c.key || c.provider !== 'gemini') return;
+  var t = Date.now();
+  var ms = geminiModels_(c.key);
+  console.log('models (' + (Date.now() - t) + ' ms): ' + ms.join(', '));
+  var schema = { type: 'object', properties: { answer_th: { type: 'string' } }, required: ['answer_th'] };
+  [ms[0], 'gemini-flash-latest'].forEach(function (m) {
+    if (!m) return;
+    t = Date.now();
+    try {
+      var r = callGemini_({ key: c.key, model: m }, 'ตอบสั้นๆ', [{ text: 'ทักทาย 1 ประโยค' }], schema);
+      console.log(m + ' OK ' + (Date.now() - t) + ' ms: ' + JSON.stringify(r.json).slice(0, 120));
+    } catch (e) { console.log(m + ' FAIL ' + (Date.now() - t) + ' ms: ' + e.message); }
+  });
+}
