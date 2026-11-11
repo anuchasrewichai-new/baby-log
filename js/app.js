@@ -4,8 +4,9 @@ import { db, uid } from './db.js';
 import * as Sync from './sync.js';
 import * as C from './charts.js';
 import * as P from './photos.js';
+import * as Rep from './report.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 
@@ -64,6 +65,9 @@ const ICON = {
   thermo: '<path d="M14 14.76V4a2 2 0 0 0-4 0v10.76a4 4 0 1 0 4 0z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  doc: '<path d="M14 3H6v18h12V7zM14 3v4h4M9 13h6M9 17h6"/>',
+  print: '<path d="M6 9V3h12v6M6 18H4v-7h16v7h-2M8 14h8v7H8z"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>'
 };
@@ -163,7 +167,7 @@ async function checkAlerts() {
   const changed = visible.map((a) => a.key).join() !== (S.alerts || []).map((a) => a.key).join();
   S.alerts = visible;
   for (const a of visible) await fireAlert(a);
-  if (changed && route().parts[0] !== 'log' && route().parts[0] !== 'settings') { const y = window.scrollY; render(); window.scrollTo(0, y); }
+  if (changed && !['log', 'settings', 'report'].includes(route().parts[0])) { const y = window.scrollY; render(); window.scrollTo(0, y); }
 }
 function alertBanners() {
   if (!S.alerts || !S.alerts.length) return '';
@@ -201,7 +205,9 @@ function render() {
   else if (v === 'history') html = viewHistory();
   else if (v === 'settings') html = viewSettings();
   else if (v === 'danger') html = viewDanger();
+  else if (v === 'report') html = viewReport();
   else html = viewHome();
+  document.body.classList.toggle('on-report', v === 'report');
   if (S.viewer) html += `<div class="viewer" role="dialog" aria-label="ดูรูป"><img src="${S.viewer}" alt="รูปผ้าอ้อมที่ถ่าย"><button type="button" class="viewer-close" data-act="viewer-close" aria-label="ปิด">${icon('close')}</button></div>`;
   $app.innerHTML = html;
   tick();
@@ -213,7 +219,7 @@ function render() {
 /* ===================== ส่วนประกอบร่วม ===================== */
 function nav(active) {
   const item = (hash, ic, label, key) => `<a href="${hash}" class="nav-item ${active === key ? 'on' : ''}" ${active === key ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
-  return `<nav class="nav" aria-label="เมนูหลัก">${item('#/', 'pencil', 'บันทึก', 'home')}${item('#/dash', 'chart', 'แดชบอร์ด', 'dash')}${item('#/history', 'clock', 'ประวัติ', 'history')}${item('#/settings', 'gear', 'ตั้งค่า', 'settings')}</nav>`;
+  return `<nav class="nav" aria-label="เมนูหลัก">${item('#/', 'pencil', 'บันทึก', 'home')}${item('#/dash', 'chart', 'แดชบอร์ด', 'dash')}${item('#/history', 'clock', 'ประวัติ', 'history')}${item('#/report', 'doc', 'รายงาน', 'report')}${item('#/settings', 'gear', 'ตั้งค่า', 'settings')}</nav>`;
 }
 function topbar(title, back = '#/') {
   return `<header class="topbar"><a class="icon-btn" href="${back}" aria-label="กลับ">${icon('back')}</a><h1>${esc(title)}</h1></header>`;
@@ -665,6 +671,35 @@ function viewSettings() {
   </main>${nav('settings')}`;
 }
 
+/* ===================== รายงานสำหรับแพทย์ ===================== */
+function viewReport() {
+  const n = S.reportDays || 7;
+  const html = Rep.reportHtml({ records: S.records, settings: S.settings, now: Date.now(), nDays: n, notes: S.reportNotes || '', photoUrl: (id) => P.cachedUrl(id) });
+  setTimeout(hydrateReportPhotos, 0);
+  return `<main class="page page-report">
+    <header class="home-head no-print"><h1>รายงานสำหรับแพทย์</h1></header>
+    <section class="rp-toolbar no-print">
+      <div class="seg seg-btns seg-sm" role="group" aria-label="ช่วงเวลา">${[7, 14, 30].map((d) => `<button type="button" class="seg-btn ${n === d ? 'on' : ''}" data-act="rep-range" data-v="${d}" aria-pressed="${n === d}">${d} วัน</button>`).join('')}</div>
+      <div class="btn-row"><button type="button" class="btn btn-primary" data-act="rep-print">${icon('print', 's')}พิมพ์ / บันทึก PDF</button><button type="button" class="btn" data-act="rep-share">${icon('share', 's')}แชร์ข้อความสรุป</button></div>
+      <p class="small muted">กด "พิมพ์ / บันทึก PDF" แล้วเลือกเครื่องพิมพ์เป็น <b>บันทึกเป็น PDF</b> (Android) หรือกดปุ่มแชร์ในหน้าตัวอย่างก่อนพิมพ์ (iPhone) เพื่อส่งไฟล์ทาง LINE</p>
+    </section>
+    <div class="rp-paper">${html}</div>
+  </main>${nav('report')}`;
+}
+async function hydrateReportPhotos() {
+  const slots = [...document.querySelectorAll('.rp-ph[data-photo]')].filter((el) => !el.querySelector('img'));
+  for (const el of slots) {
+    const url = await P.photoUrl(el.dataset.photo, { fetchRemote: !!S.syncCfg.url });
+    const cur = document.querySelector(`.rp-ph[data-photo="${CSS.escape(el.dataset.photo)}"]`);
+    if (cur) cur.innerHTML = url ? `<img src="${url}" alt="">` : '<span>ไม่มีรูปในเครื่องนี้</span>';
+  }
+}
+async function waitImages() {
+  await hydrateReportPhotos();
+  const imgs = [...document.querySelectorAll('#report img')];
+  await Promise.all(imgs.map((i) => (i.complete ? null : new Promise((r) => { i.onload = i.onerror = r; }))));
+}
+
 function viewDanger() {
   return `<main class="page">${topbar('อาการอันตราย', '#/')}
     <section class="result lv-3"><div class="result-title">ถ้ามีข้อใดข้อหนึ่ง ไปโรงพยาบาลทันที หรือโทร 1669</div>
@@ -761,6 +796,15 @@ const actions = {
   },
   async install() { if (S.installEvt) { S.installEvt.prompt(); await S.installEvt.userChoice; S.installEvt = null; render(); } },
   'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); },
+  'rep-range'(el) { S.reportDays = Number(el.dataset.v); render(); },
+  async 'rep-print'() { toast('กำลังเตรียมรายงาน…'); await waitImages(); $toast.classList.remove('show'); window.print(); },
+  async 'rep-share'() {
+    const text = Rep.shareText({ records: S.records, settings: S.settings, now: Date.now(), nDays: S.reportDays || 7, notes: S.reportNotes || '' });
+    try {
+      if (navigator.share) await navigator.share({ title: 'สรุปบันทึกลูกน้อย', text });
+      else { await navigator.clipboard.writeText(text); toast('คัดลอกข้อความแล้ว วางใน LINE ได้เลย'); }
+    } catch (e) { if (e.name !== 'AbortError') { try { await navigator.clipboard.writeText(text); toast('คัดลอกข้อความแล้ว'); } catch (e2) { toast('แชร์ไม่สำเร็จ'); } } }
+  },
   'pick-site'(el) { S.draft.tempSite = el.dataset.v; render(); },
   tmp(el) { S.draft.tempC = Math.round(((num(S.draft.tempC) ?? 36.8) + Number(el.dataset.v)) * 10) / 10; render(); },
   'pick-zone'(el) { S.draft.zone = Number(el.dataset.v); render(); },
@@ -910,6 +954,11 @@ document.addEventListener('click', async (ev) => {
 });
 document.addEventListener('input', (ev) => {
   const el = ev.target;
+  if (el.hasAttribute && el.hasAttribute('data-bind-notes')) {
+    S.reportNotes = el.value.slice(0, 600);
+    clearTimeout(S.notesTimer); S.notesTimer = setTimeout(() => db.set('reportNotes', S.reportNotes), 400);
+    return;
+  }
   if (el.dataset && el.dataset.bind) {
     const k = el.dataset.bind;
     S.draft[k] = k === 'ts' || k === 'endTs' ? fromLocalInput(el.value) : el.value;
@@ -996,7 +1045,7 @@ Sync.onSyncChange((st) => {
 });
 
 setInterval(tick, 1000);
-setInterval(() => { if (route().parts[0] !== 'log' && !document.hidden) { recompute(); const y = window.scrollY; render(); window.scrollTo(0, y); } }, 60000);
+setInterval(() => { if (!['log', 'report', 'settings'].includes(route().parts[0]) && !document.hidden) { recompute(); const y = window.scrollY; render(); window.scrollTo(0, y); } }, 60000);
 setInterval(() => { if (!document.hidden) scheduleSync(0); }, 120000);
 
 /* ===================== เริ่มทำงาน ===================== */
@@ -1006,6 +1055,7 @@ async function init() {
   S.syncCfg = await Sync.getConfig();
   S.feedTimer = await db.get('feedTimer');
   S.sleepTimer = await db.get('sleepTimer');
+  S.reportNotes = await db.get('reportNotes', '');
   S.notify = await db.get('notifyPrefs', { enabled: false, sound: true });
   if (S.notify.enabled && 'Notification' in window && Notification.permission !== 'granted') S.notify.enabled = false;
   S.sync = { ...S.sync, pending: await Sync.countPending(), lastAt: await db.get('lastSyncAt') };
