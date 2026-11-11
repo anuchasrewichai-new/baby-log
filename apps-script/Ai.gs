@@ -100,7 +100,7 @@ function geminiModels_(key) {
       var v = Number((n.match(/gemini-([\d.]+)/) || [0, 0])[1]) || 0;
       return v * 100 - (/lite/.test(n) ? 10 : 0) - (/preview/.test(n) ? 5 : 0) - (/-\d{3,}$/.test(n) ? 1 : 0);
     }
-    return list.sort(function (a, b) { return score(b) - score(a); }).slice(0, 4);
+    return list.sort(function (a, b) { return score(b) - score(a); }).slice(0, 10);
   } catch (e) { return []; }
 }
 
