@@ -124,7 +124,7 @@ export async function uploadQueue() {
 const KEEP = new Set(['s01', 's02', 's03', 's04', 's10', 's11', 'u3', 'u4', 'u5', 'watery', 'mucus', 'hard']);
 export function shouldKeep(rec, birthDate) {
   if (!rec || rec.deleted) return false;
-  if (KEEP.has(rec.color) || KEEP.has(rec.consistency)) return true;
+  if (KEEP.has(rec.color) || KEEP.has(rec.consistency) || Number(rec.aiPale) >= 0.15) return true;
   const dol = R.dayOfLife(birthDate, R.localDate(rec.ts));
   const lv = rec.type === 'poop' ? R.evaluateStool(rec, dol).level : rec.type === 'pee' ? R.evaluateUrine(rec, dol).level : 0;
   return lv >= 1;

@@ -12,13 +12,13 @@
  * ข้อมูลอยู่ใน Google Sheet ของคุณเท่านั้น
  */
 
-var API_VERSION = '1.1.0';
+var API_VERSION = '1.2.0';
 var SHEETS = { LOGS: 'Logs', SETTINGS: 'Settings', CONFIG: 'Config', PHOTOS: 'Photos' };
 var PHOTO_COLS = ['PhotoID', 'DriveFileID', 'RecordID', 'Ts', 'Time', 'Bytes', 'Keep', 'CreatedAt', 'Trashed'];
 var PHOTO_FOLDER_NAME = 'Baby Log Photos';
 var MAX_PHOTO_BYTES = 1500000;
 var LOG_COLS = ['ID', 'Seq', 'Type', 'Ts', 'Time', 'EndTs', 'Color', 'Consistency', 'Amount', 'Method',
-                'DurL', 'DurR', 'TempC', 'TempSite', 'Zone', 'PhotoID', 'Note', 'UpdatedAt', 'Deleted', 'Device', 'BabyID', 'Side'];
+                'DurL', 'DurR', 'TempC', 'TempSite', 'Zone', 'PhotoID', 'Note', 'UpdatedAt', 'Deleted', 'Device', 'BabyID', 'Side', 'AiPale'];
 var TYPES = ['pee', 'poop', 'feed', 'weight', 'temp', 'jaundice', 'sleep'];
 var SETTING_KEYS = ['babyName', 'birthDate', 'birthWeightKg', 'gestationWeeks', 'feedingType', 'feedIntervalH', 'peeAlertH', 'photoRetentionDays', 'photoMode'];
 var MAX_PUSH = 500;
@@ -80,6 +80,8 @@ function ensureSheets_() {
   if (logs.getLastRow() === 0) {
     logs.getRange(1, 1, 1, LOG_COLS.length).setValues([LOG_COLS]).setFontWeight('bold');
     logs.setFrozenRows(1);
+  } else if (String(logs.getRange(1, LOG_COLS.length).getValues()[0][0]) !== LOG_COLS[LOG_COLS.length - 1]) {
+    logs.getRange(1, 1, 1, LOG_COLS.length).setValues([LOG_COLS]).setFontWeight('bold');   // เพิ่มหัวคอลัมน์ใหม่ เมื่ออัปเดตเวอร์ชัน
   }
   var st = sheet_(SHEETS.SETTINGS);
   if (st.getLastRow() === 0) {
@@ -133,6 +135,9 @@ function doPost(e) {
       case 'deletePhoto': return json_(deletePhoto_(req));
       case 'photoStats': return json_(photoStats_());
       case 'cleanupPhotos': return json_(cleanupPhotos_(req.days));
+      case 'aiStatus': return json_(aiStatus_());
+      case 'aiPhoto': return json_(aiPhoto_(req));
+      case 'aiText': return json_(aiText_(req));
       default: return json_({ ok: false, error: 'unknown_action' });
     }
   } catch (err) {
@@ -256,13 +261,14 @@ function sanitize_(r, device) {
     deleted: r.deleted ? true : false,
     device: device || cleanStr_(r.device, 40),
     babyId: cleanStr_(r.babyId, 20) || 'b1',
-    side: cleanStr_(r.side, 2)
+    side: cleanStr_(r.side, 2),
+    aiPale: numOrBlank_(r.aiPale)
   };
 }
 
 function toRow_(r, seq) {
   return [r.id, seq, r.type, r.ts, new Date(r.ts), r.endTs, r.color, r.consistency, r.amount, r.method,
-          r.durL, r.durR, r.tempC, r.tempSite, r.zone, r.photoId, r.note, r.updatedAt, r.deleted, r.device, r.babyId, r.side];
+          r.durL, r.durR, r.tempC, r.tempSite, r.zone, r.photoId, r.note, r.updatedAt, r.deleted, r.device, r.babyId, r.side, r.aiPale];
 }
 
 function fromRow_(row) {
@@ -272,7 +278,7 @@ function fromRow_(row) {
     color: row[6] || '', consistency: row[7] || '', amount: n(row[8]), method: row[9] || '',
     durL: n(row[10]), durR: n(row[11]), tempC: n(row[12]), tempSite: row[13] || '', zone: n(row[14]),
     photoId: row[15] || '', note: row[16] || '', updatedAt: Number(row[17]),
-    deleted: row[18] === true || row[18] === 'TRUE', device: row[19] || '', babyId: row[20] || 'b1', side: row[21] || ''
+    deleted: row[18] === true || row[18] === 'TRUE', device: row[19] || '', babyId: row[20] || 'b1', side: row[21] || '', aiPale: n(row[22])
   };
 }
 
@@ -318,7 +324,7 @@ function recordKeepMap_() {
   var map = {};
   if (last < 2) return map;
   sh.getRange(2, 1, last - 1, LOG_COLS.length).getValues().forEach(function (r) {
-    var keep = KEEP_COLORS.indexOf(String(r[6])) >= 0 || KEEP_CONSISTENCY.indexOf(String(r[7])) >= 0;
+    var keep = KEEP_COLORS.indexOf(String(r[6])) >= 0 || KEEP_CONSISTENCY.indexOf(String(r[7])) >= 0 || Number(r[22]) >= 0.15;
     map[String(r[0])] = { keep: keep, deleted: r[18] === true || r[18] === 'TRUE' };
   });
   return map;

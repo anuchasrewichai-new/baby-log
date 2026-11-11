@@ -203,3 +203,8 @@ test('แจ้งเตือน: ไข้ทันที / วัดซ้ำ
   const sleepTimer = { startTs: at('2026-11-11', 4) };
   assert.ok(R.activeAlerts([], S, at('2026-11-11', 8, 30), { sleepTimer }).some((x) => x.key.startsWith('sleep:')));
 });
+
+test('Phase 5: ผล AI สีซีด ≥15% ทำให้รายการอึสีเหลืองกลายเป็นระดับ 3 (เลือกระดับที่รุนแรงกว่า)', () => {
+  assert.equal(R.evaluateStool({ color: 's06', aiPale: 0.16 }, 9).level, 3);
+  assert.equal(R.evaluateStool({ color: 's06', aiPale: 0.1 }, 9).level, 0);
+});

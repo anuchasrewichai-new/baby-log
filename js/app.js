@@ -5,8 +5,9 @@ import * as Sync from './sync.js';
 import * as C from './charts.js';
 import * as P from './photos.js';
 import * as Rep from './report.js';
+import * as AI from './ai.js';
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 
@@ -14,6 +15,7 @@ const DEFAULT_SETTINGS = { babyName: '', birthDate: '', birthWeightKg: '', gesta
 const S = {
   records: [], settings: { ...DEFAULT_SETTINGS }, sum: null, range: 7,
   draft: {}, draftKey: '', confirmDel: false, syncCfg: { url: '', key: '' }, sync: Sync.syncState(),
+  ai: { prefs: { enabled: false, consent: false }, status: null, photo: {}, trend: null, report: null, history: [], busy: {} },
   feedTimer: null, sleepTimer: null, alerts: [], notify: { enabled: false, sound: true }, installEvt: null, swWaiting: null, histLimit: 14, confirmReset: false
 };
 
@@ -68,6 +70,8 @@ const ICON = {
   doc: '<path d="M14 3H6v18h12V7zM14 3v4h4M9 13h6M9 17h6"/>',
   print: '<path d="M6 9V3h12v6M6 18H4v-7h16v7h-2M8 14h8v7H8z"/>',
   share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+  send: '<path d="M4 12l16-8-6 16-2.5-6.5z"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>'
 };
@@ -167,7 +171,7 @@ async function checkAlerts() {
   const changed = visible.map((a) => a.key).join() !== (S.alerts || []).map((a) => a.key).join();
   S.alerts = visible;
   for (const a of visible) await fireAlert(a);
-  if (changed && !['log', 'settings', 'report'].includes(route().parts[0])) { const y = window.scrollY; render(); window.scrollTo(0, y); }
+  if (changed && !['log', 'settings', 'report', 'ask'].includes(route().parts[0])) { const y = window.scrollY; render(); window.scrollTo(0, y); }
 }
 function alertBanners() {
   if (!S.alerts || !S.alerts.length) return '';
@@ -206,6 +210,7 @@ function render() {
   else if (v === 'settings') html = viewSettings();
   else if (v === 'danger') html = viewDanger();
   else if (v === 'report') html = viewReport();
+  else if (v === 'ask') html = viewAsk();
   else html = viewHome();
   document.body.classList.toggle('on-report', v === 'report');
   if (S.viewer) html += `<div class="viewer" role="dialog" aria-label="ดูรูป"><img src="${S.viewer}" alt="รูปผ้าอ้อมที่ถ่าย"><button type="button" class="viewer-close" data-act="viewer-close" aria-label="ปิด">${icon('close')}</button></div>`;
@@ -426,6 +431,33 @@ function photoPanel(d, ref) {
     <figure><div class="cmp-img">${ref ? `<img src="img/${ref.img}" alt="">` : '<span class="cmp-ph">แตะเลือกภาพด้านล่าง</span>'}</div><figcaption>${ref ? 'ตัวอย่าง: ' + esc(ref.short || ref.label) : 'ภาพตัวอย่าง'}</figcaption></figure>
     <div class="cmp-actions">${photoInput('ถ่ายใหม่', 'link')}<button type="button" class="link" data-act="photo-remove">ลบรูป</button></div>
     <p class="cmp-note">สีบนจออาจเพี้ยนตามแสง ถ้าก้ำกึ่งกับภาพสีซีด ให้ถือว่าผิดปกติไว้ก่อนและส่งรูปให้แพทย์ดู</p>
+  </section>${aiPhotoBlock(d)}`;
+}
+const aiUsable = () => S.ai.prefs.enabled && S.ai.prefs.consent && !!S.syncCfg.url && navigator.onLine !== false;
+function aiTag(label = 'AI ช่วยดู') { return `<span class="ai-tag">${icon('spark', 's')}${label}</span>`; }
+function aiPhotoBlock(d) {
+  if (!S.ai.prefs.enabled || !d.photoId) return '';
+  const st = S.ai.photo[d.photoId] || {};
+  if (!aiUsable()) return `<p class="pad small muted">${aiTag()} ใช้ได้เมื่อออนไลน์ ตั้งค่าซิงก์ และยอมรับเงื่อนไขในหน้าตั้งค่าแล้ว</p>`;
+  if (st.loading) return `<div class="ai-card pad-m">${aiTag()}<span class="small">กำลังวิเคราะห์รูป…</span></div>`;
+  if (st.err) return `<div class="ai-card pad-m lv-1">${aiTag()}<span class="small">${esc(st.err)}</span><button type="button" class="link" data-act="ai-photo">ลองใหม่</button></div>`;
+  if (!st.res) return `<div class="pad"><button type="button" class="btn btn-ai btn-block" data-act="ai-photo">${icon('spark', 's')}ให้ AI ช่วยดูสีจากรูป</button></div>`;
+  const r = st.res;
+  const lv = r.verdict === 'pale_alert' ? 3 : r.verdict === 'ok' ? 0 : 1;
+  const meta = (id) => (r.kind === 'pee' ? urineMeta(id) : stoolMeta(id)) || { label: id, short: id };
+  const bar = (label, p, hot) => `<div class="ai-bar"><span>${esc(label)}</span><i><b style="width:${Math.round(p * 100)}%" class="${hot ? 'hot' : ''}"></b></i><em>${Math.round(p * 100)}%</em></div>`;
+  const bars = r.scores.slice(0, 3).map((x) => bar(meta(x.id).short || meta(x.id).label, x.p, ['s01', 's02', 's03'].includes(x.id))).join('')
+    + (r.kind === 'poop' ? bar('กลุ่มสีซีด (1–3)', r.paleProb, true) : '');
+  const palest = r.scores.find((x) => ['s01', 's02', 's03'].includes(x.id));
+  const useBtns = [r.top && r.verdict !== 'retake' ? r.top : null, r.verdict === 'pale_alert' && palest && (!r.top || palest.id !== r.top.id) ? palest : null].filter(Boolean)
+    .map((x) => `<button type="button" class="pill ${d.color === x.id ? 'on' : ''}" data-act="ai-use" data-v="${x.id}">ใช้สี: ${esc(meta(x.id).short || meta(x.id).label)}</button>`).join('');
+  return `<section class="ai-card pad-m ${lvClass(lv)}">
+    <div class="row-between">${aiTag()}<span class="small muted">${r.quality === 'good' ? 'แสงดี' : r.quality === 'fair' ? 'แสงพอใช้' : 'แสงไม่พอ'}</span></div>
+    <div class="ai-title">${esc(r.message)}</div>
+    <div class="ai-bars">${bars}</div>
+    ${r.reason ? `<div class="small">${esc(r.reason)}</div>` : ''}
+    ${useBtns ? `<div class="pills">${useBtns}</div>` : ''}
+    <div class="small muted">${esc(r.disclaimer || AI.DISCLAIMER)} · คุณเป็นคนเลือกสีที่บันทึก</div>
   </section>`;
 }
 function stoolNormalText(id) {
@@ -583,6 +615,7 @@ function viewDash() {
       <button type="button" class="seg-btn ${S.range === 7 ? 'on' : ''}" data-act="range" data-v="7" aria-pressed="${S.range === 7}">7 วัน</button>
       <button type="button" class="seg-btn ${S.range === 14 ? 'on' : ''}" data-act="range" data-v="14" aria-pressed="${S.range === 14}">14 วัน</button></div></header>
     <section class="status ${lvClass(o.level)}"><div><div class="status-title">ภาพรวม: ${lvText(o.level)}</div>${msgList(o.msgs) || '<div class="status-sub">ไม่พบสิ่งผิดปกติในช่วงนี้</div>'}</div></section>
+    ${aiTrendCard()}
     <section class="grid4">
       ${tile('ฉี่วันนี้', today.wet ?? 0, today.expWet ? `/${today.expWet}` : '')}
       ${tile('อึวันนี้', today.stool ?? 0, today.expStool ? `/${today.expStool}` : '')}
@@ -608,6 +641,41 @@ function viewDash() {
     <section class="card list">${[...days].reverse().map((d) => `<details class="day"><summary><span class="day-date">${d.isToday ? 'วันนี้' : dateTh(d.date)}${d.dol ? ` <span class="muted small">วันที่ ${d.dol}</span>` : ''}</span><span class="day-nums">ฉี่ ${d.wet} · อึ ${d.stool} · นม ${d.feeds}</span><span class="lvchip ${lvClass(d.isToday && d.level === 0 ? null : d.level)}">${d.isToday ? (d.level > 0 ? lvText(d.level) : 'ยังไม่ครบวัน') : lvText(d.level)}</span></summary>${msgList(d.msgs) || '<p class="small muted">ครบเกณฑ์</p>'}${d.bottleMl ? `<p class="small muted">นมขวด ${d.bottleMl} มล.</p>` : ''}${d.breastMin ? `<p class="small muted">เข้าเต้ารวม ${d.breastMin} นาที</p>` : ''}${d.maxTemp !== null ? `<p class="small muted">อุณหภูมิสูงสุด ${d.maxTemp.toFixed(1)} °C</p>` : ''}${d.maxZone !== null ? `<p class="small muted">ตัวเหลืองสูงสุด ระดับ ${d.maxZone}</p>` : ''}${d.sleepMin ? `<p class="small muted">นอนรวม ${durText(d.sleepMin * 60000)}</p>` : ''}</details>`).join('')}</section>
     <p class="disclaimer">ประเมินตามแนวทางทั่วไป ไม่ใช่การวินิจฉัย · วันนี้ยังไม่ครบ 24 ชม. จึงประเมินเฉพาะสีและลักษณะ</p>
   </main>${nav('dash')}`;
+}
+
+function aiTrendCard() {
+  if (!S.ai.prefs.enabled) return '';
+  const t = S.ai.trend, busy = S.ai.busy.trend;
+  if (aiUsable() && !busy && !S.ai.trendTried && (!t || t.date !== R.localDate(Date.now())) && live().length) {
+    S.ai.trendTried = true; setTimeout(() => actions['ai-trend'](null, null, false), 0);
+  }
+  const r = t && t.res;
+  const lv = r && r.suggestDoctor ? 2 : 0;
+  return `<section class="ai-card ${r && lv ? 'lv-2' : ''}" id="ai-trend">
+    <div class="row-between">${aiTag('AI สรุปแนวโน้ม')}<span class="small muted">${busy ? 'กำลังสรุป…' : t ? `อัปเดต ${hm(t.at)}` : ''}</span></div>
+    ${S.ai.trendErr ? `<div class="small txt-1">${esc(S.ai.trendErr)}</div>` : ''}
+    ${r ? `<div class="ai-text">${esc(r.summary)}</div>${r.points && r.points.length ? `<ul class="ai-points">${r.points.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${r.forcedNote ? `<div class="small txt-2 b">${esc(r.forcedNote)}</div>` : ''}` : !busy && !S.ai.trendErr ? `<div class="small muted">${aiUsable() ? 'ยังไม่มีสรุป' : 'ต้องออนไลน์และตั้งค่าซิงก์'}</div>` : ''}
+    <div class="row-between"><span class="small muted">${AI.DISCLAIMER}</span><span class="btn-row-inline">${aiUsable() ? `<button type="button" class="link" data-act="ai-trend">สรุปใหม่</button>` : ''}<a class="link" href="#/ask">ถาม AI</a></span></div>
+  </section>`;
+}
+function patchTrend() { const el = document.getElementById('ai-trend'); if (el) el.outerHTML = aiTrendCard(); }
+
+/* ---------- ถาม AI ---------- */
+function viewAsk() {
+  const h = S.ai.history;
+  const chips = ['ทำไมอึเป็นสีเขียว', 'ลูกได้นมพอไหม', 'ตัวเหลืองแบบนี้ต้องทำอะไร', 'ฉี่น้อยลงควรทำอย่างไร'];
+  const usable = aiUsable();
+  return `<main class="page page-ask">${topbar('ถาม AI', '#/dash')}
+    <p class="small muted pad-x">AI ตอบจากข้อมูลที่บันทึก 7 วันล่าสุด (ไม่ส่งชื่อลูก) · ${AI.DISCLAIMER} · ถ้ามีอาการอันตรายให้ไปโรงพยาบาลทันที</p>
+    <section class="chat" aria-live="polite">
+      ${h.length ? '' : `<div class="bubble ai">${aiTag('AI')}<div>สวัสดีครับ ถามเรื่องการขับถ่าย การกินนม หรือสิ่งที่บันทึกไว้ได้เลย</div></div>`}
+      ${h.map((m) => `<div class="bubble ${m.role === 'ai' ? 'ai' : 'me'} ${m.urgent ? 'lv-3 urgent' : ''}">${m.role === 'ai' ? aiTag(m.urgent ? 'ด่วน' : 'AI') : ''}<div>${esc(m.text).replace(/\n/g, '<br>')}</div>${m.urgent ? '<a class="link" href="#/danger">ดูอาการอันตราย</a>' : ''}</div>`).join('')}
+      ${S.ai.busy.ask ? `<div class="bubble ai">${aiTag('AI')}<div class="muted">กำลังคิด…</div></div>` : ''}
+    </section>
+    ${h.length ? '' : `<div class="pills pad-x">${chips.map((c) => `<button type="button" class="pill" data-act="ask-chip" data-v="${esc(c)}">${esc(c)}</button>`).join('')}</div>`}
+    ${h.length ? `<p class="center"><button type="button" class="link small" data-act="ask-clear">ล้างบทสนทนา</button></p>` : ''}
+  </main>
+  <form class="askbar" data-form="ask"><input name="q" maxlength="300" placeholder="${usable ? 'พิมพ์คำถาม…' : 'ต้องออนไลน์ ตั้งค่าซิงก์ และเปิดใช้ AI ก่อน'}" autocomplete="off" ${usable ? '' : 'disabled'} aria-label="คำถาม"><button type="submit" class="btn btn-primary" ${usable ? '' : 'disabled'} aria-label="ส่ง">${icon('send', 's')}</button></form>`;
 }
 
 /* ===================== ประวัติ ===================== */
@@ -654,6 +722,8 @@ function viewSettings() {
       <p class="small muted">เตือนได้แน่นอนเมื่อแอปเปิดอยู่หรือเพิ่งพับไว้ ถ้าปิดแอปหรือล็อกจอนาน มือถืออาจไม่เตือน — ช่วงกลางคืนแนะนำให้เปิดแอปค้างไว้ หรือตั้งนาฬิกาปลุกสำรอง · ตั้งค่าแยกกันในแต่ละเครื่อง</p>
     </section>
 
+    ${aiSettings()}
+
     ${photoSettings()}
 
     <section class="card form"><h2 class="card-title">ติดตั้งเป็นแอป</h2>
@@ -674,12 +744,14 @@ function viewSettings() {
 /* ===================== รายงานสำหรับแพทย์ ===================== */
 function viewReport() {
   const n = S.reportDays || 7;
-  const html = Rep.reportHtml({ records: S.records, settings: S.settings, now: Date.now(), nDays: n, notes: S.reportNotes || '', photoUrl: (id) => P.cachedUrl(id) });
+  const aiRep = S.ai.report && S.ai.report.nDays === n ? S.ai.report : null;
+  const html = Rep.reportHtml({ records: S.records, settings: S.settings, now: Date.now(), nDays: n, notes: S.reportNotes || '', photoUrl: (id) => P.cachedUrl(id), ai: aiRep });
   setTimeout(hydrateReportPhotos, 0);
   return `<main class="page page-report">
     <header class="home-head no-print"><h1>รายงานสำหรับแพทย์</h1></header>
     <section class="rp-toolbar no-print">
       <div class="seg seg-btns seg-sm" role="group" aria-label="ช่วงเวลา">${[7, 14, 30].map((d) => `<button type="button" class="seg-btn ${n === d ? 'on' : ''}" data-act="rep-range" data-v="${d}" aria-pressed="${n === d}">${d} วัน</button>`).join('')}</div>
+      ${S.ai.prefs.enabled ? `<div class="btn-row"><button type="button" class="btn btn-ai" data-act="ai-report" ${aiUsable() && !S.ai.busy.report ? '' : 'disabled'}>${icon('spark', 's')}${S.ai.busy.report ? 'AI กำลังสรุป…' : aiRep ? 'ให้ AI สรุปใหม่' : 'ให้ AI ช่วยสรุปในรายงาน'}</button>${aiRep && aiRep.res.points.length ? `<button type="button" class="btn" data-act="ai-report-questions">เพิ่มคำถามของ AI ลงช่องคำถาม</button>` : ''}</div>${S.ai.reportErr ? `<p class="small txt-1">${esc(S.ai.reportErr)}</p>` : ''}` : ''}
       <div class="btn-row"><button type="button" class="btn btn-primary" data-act="rep-print">${icon('print', 's')}พิมพ์ / บันทึก PDF</button><button type="button" class="btn" data-act="rep-share">${icon('share', 's')}แชร์ข้อความสรุป</button></div>
       <p class="small muted">กด "พิมพ์ / บันทึก PDF" แล้วเลือกเครื่องพิมพ์เป็น <b>บันทึกเป็น PDF</b> (Android) หรือกดปุ่มแชร์ในหน้าตัวอย่างก่อนพิมพ์ (iPhone) เพื่อส่งไฟล์ทาง LINE</p>
     </section>
@@ -796,6 +868,41 @@ const actions = {
   },
   async install() { if (S.installEvt) { S.installEvt.prompt(); await S.installEvt.userChoice; S.installEvt = null; render(); } },
   'sw-update'() { if (S.swWaiting) S.swWaiting.postMessage('skipWaiting'); },
+  async 'ai-photo'() {
+    const d = S.draft, id = d.photoId; if (!id) return;
+    S.ai.photo[id] = { loading: true }; render();
+    try {
+      let blob = d.newPhoto && d.newPhoto.id === id ? d.newPhoto.blob : null;
+      if (!blob) { await P.photoUrl(id, { fetchRemote: true }); const ph = await db.getPhoto(id); blob = ph && ph.blob; }
+      if (!blob) throw new Error('ไม่พบรูปในเครื่อง');
+      const type = route().parts[1];
+      const res = await AI.analyzePhoto(blob, type === 'pee' ? 'pee' : 'poop', R.dayOfLife(S.settings.birthDate, R.localDate(d.ts)));
+      S.ai.photo[id] = { res };
+      if (S.draftKey && S.draft.photoId === id && res.kind === 'poop') S.draft.aiPale = res.paleProb;
+      if (res.verdict === 'pale_alert') toast('AI พบโอกาสสีซีด — แอปจะเตือนพบแพทย์');
+    } catch (e) { S.ai.photo[id] = { err: e.message }; }
+    if (route().parts[0] === 'log') render();
+  },
+  'ai-use'(el) { S.draft.color = el.dataset.v; render(); },
+  async 'ai-trend'(el, ev, force = true) {
+    if (S.ai.busy.trend) return;
+    S.ai.busy.trend = true; S.ai.trendErr = ''; patchTrend();
+    try { S.ai.trend = await AI.trend(S.records, S.settings, { force }); } catch (e) { S.ai.trendErr = e.message; }
+    S.ai.busy.trend = false; patchTrend(); loadAiStatus();
+  },
+  async 'ai-report'() {
+    S.ai.busy.report = true; S.ai.reportErr = ''; render();
+    try { S.ai.report = await AI.reportSummary(S.records, S.settings, S.reportDays || 7); } catch (e) { S.ai.reportErr = e.message; }
+    S.ai.busy.report = false; if (route().parts[0] === 'report') render();
+  },
+  async 'ai-report-questions'() {
+    const qs = S.ai.report.res.points.map((q) => '• ' + q).join('\n');
+    S.reportNotes = (S.reportNotes ? S.reportNotes.trim() + '\n' : '') + qs; await db.set('reportNotes', S.reportNotes); render(); toast('เพิ่มคำถามแล้ว แก้ไขได้ในช่องคำถาม');
+  },
+  async 'ai-consent'() { S.ai.prefs = { enabled: true, consent: true }; S.ai.showConsent = false; await AI.setPrefs(S.ai.prefs); render(); loadAiStatus(); },
+  'ai-consent-cancel'() { S.ai.showConsent = false; render(); },
+  'ask-chip'(el) { askQuestion(el.dataset.v); },
+  async 'ask-clear'() { S.ai.history = []; await db.set('aiAsk', []); render(); },
   'rep-range'(el) { S.reportDays = Number(el.dataset.v); render(); },
   async 'rep-print'() { toast('กำลังเตรียมรายงาน…'); await waitImages(); $toast.classList.remove('show'); window.print(); },
   async 'rep-share'() {
@@ -853,6 +960,33 @@ const actions = {
   }
 };
 
+function aiSettings() {
+  const p = S.ai.prefs, st = S.ai.status;
+  let status = '';
+  if (!S.syncCfg.url) status = '<p class="small txt-1">ต้องตั้งค่าซิงก์กับ Google Sheet ก่อน (AI เรียกผ่าน Apps Script ของคุณ)</p>';
+  else if (!st) status = '<p class="small muted">กำลังตรวจสถานะ…</p>';
+  else if (st.ok === false) status = `<p class="small txt-1">${esc(st.message || 'ตรวจสถานะไม่ได้')}</p>`;
+  else if (!st.enabled) status = '<p class="small txt-1">ยังไม่ได้ใส่ API key ใน Apps Script — ดูวิธีใน README หัวข้อ "Phase 5"</p>';
+  else status = `<div class="row-between small"><span>ผู้ให้บริการ: <b>${st.provider === 'claude' ? 'Claude (Anthropic)' : 'Google Gemini'}</b></span><span>ใช้วันนี้ <b>${st.usedToday} / ${st.limit}</b> ครั้ง</span></div>`;
+  const consent = S.ai.showConsent ? `<div class="consent">
+      <b>ก่อนเปิดใช้ AI</b>
+      <ul><li>เมื่อกดใช้ AI รูปผ้าอ้อม และ/หรือ ตัวเลขสรุปการบันทึก (ไม่มีชื่อลูก) จะถูกส่งไปยังผู้ให้บริการ AI ที่ตั้งไว้ใน Apps Script (Google Gemini หรือ Anthropic Claude)</li>
+      <li>ถ้าใช้ Gemini แบบฟรี ตามเงื่อนไขของ Google ข้อมูลที่ส่งอาจถูกนำไปใช้ปรับปรุงบริการ และอาจมีคนตรวจอ่านได้ — ถ้าไม่ต้องการ ให้เปิดการเรียกเก็บเงินใน Google AI Studio หรือใช้ Claude แทน</li>
+      <li>AI ช่วยคัดกรองเท่านั้น ไม่ใช่การวินิจฉัย · AI ไม่ลดระดับคำเตือนของแอป · ถ้า AI เห็นโอกาสสีซีดตั้งแต่ 15% แอปจะเตือนพบแพทย์</li>
+      <li>ปิด AI ได้ทุกเมื่อในหน้านี้</li></ul>
+      <div class="btn-row"><button type="button" class="btn btn-primary" data-act="ai-consent">ยอมรับและเปิดใช้</button><button type="button" class="btn" data-act="ai-consent-cancel">ยกเลิก</button></div></div>` : '';
+  return `<section class="card form" id="ai"><h2 class="card-title">${icon('spark', 's')} AI ช่วยประเมิน</h2>
+    <label class="toggle"><span>เปิดใช้ AI<span class="small muted">อ่านสีจากรูป · สรุปแนวโน้ม · สรุปในรายงาน · ถาม-ตอบ</span></span><input type="checkbox" data-act="ai-toggle" ${p.enabled && p.consent ? 'checked' : ''}></label>
+    ${consent}${p.enabled ? status : ''}
+    ${p.enabled && p.consent ? '<a class="btn" href="#/ask">ถาม AI</a>' : ''}
+  </section>`;
+}
+async function loadAiStatus() {
+  if (!S.ai.prefs.enabled || !S.syncCfg.url) return;
+  S.ai.status = null;
+  S.ai.status = await AI.status();
+  const el = document.getElementById('ai'); if (el && route().parts[0] === 'settings') el.outerHTML = aiSettings();
+}
 async function loadPhotoInfo() {
   // อัปเดตเฉพาะการ์ดรูป ไม่วาดทั้งหน้าใหม่ (กันฟอร์มอื่นที่กำลังกรอก/เลือกไฟล์หาย)
   const patch = () => { const el = document.getElementById('photos'); if (el && route().parts[0] === 'settings') el.outerHTML = photoSettings(); };
@@ -883,6 +1017,20 @@ function photoSettings() {
     <div class="btn-row"><button type="button" class="btn" data-act="photo-cleanup">ล้างรูปเก่าตอนนี้</button>${r && r.folderUrl ? `<a class="btn" href="${esc(r.folderUrl)}" target="_blank" rel="noopener">เปิดโฟลเดอร์ใน Drive</a>` : ''}</div>
   </section>`;
 }
+
+async function askQuestion(q) {
+  q = String(q || '').trim(); if (!q || S.ai.busy.ask) return;
+  S.ai.history.push({ role: 'me', text: q }); S.ai.busy.ask = true; render(); scrollChat();
+  try {
+    const res = await AI.ask(q, S.ai.history.slice(0, -1), S.records, S.settings);
+    const extra = res.urgent && !res.local ? '\n\nควรพาไปพบแพทย์โดยเร็ว' : !res.urgent && res.contextUrgent ? '\n\n⚠ ตอนนี้แอปมีคำเตือนระดับ "พบแพทย์โดยเร็ว" อยู่ — ดูที่หน้าแรก' : '';
+    S.ai.history.push({ role: 'ai', text: res.answer + extra, urgent: !!res.urgent });
+  } catch (e) { S.ai.history.push({ role: 'ai', text: e.message }); }
+  S.ai.busy.ask = false; S.ai.history = S.ai.history.slice(-30); await db.set('aiAsk', S.ai.history);
+  if (route().parts[0] === 'ask') { render(); scrollChat(); }
+  loadAiStatus();
+}
+function scrollChat() { setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 30); }
 
 async function saveDraft() {
   const d = S.draft, { parts, params } = route();
@@ -982,6 +1130,12 @@ document.addEventListener('change', async (ev) => {
     } catch (e) { toast(e.message || 'เปิดรูปไม่ได้'); }
     return;
   }
+  if (el.type === 'checkbox' && el.dataset.act === 'ai-toggle') {
+    if (el.checked && !S.ai.prefs.consent) { S.ai.showConsent = true; el.checked = false; }
+    else { S.ai.prefs = { ...S.ai.prefs, enabled: el.checked }; await AI.setPrefs(S.ai.prefs); if (el.checked) loadAiStatus(); }
+    const sec = document.getElementById('ai'); if (sec) sec.outerHTML = aiSettings();
+    return;
+  }
   if (el.type === 'checkbox' && (el.dataset.act === 'notify-toggle' || el.dataset.act === 'notify-sound')) { unlockAudio(); await actions[el.dataset.act](el, ev); return; }
   if (el.form && el.form.dataset.form === 'photoprefs') {
     await saveSettings({ [el.name]: el.name === 'photoRetentionDays' ? Number(el.value) : el.value });
@@ -1015,6 +1169,8 @@ document.addEventListener('submit', async (ev) => {
     S.draft = {}; S.draftKey = '';
     toast('บันทึกการตั้งค่าแล้ว');
     go('#/');
+  } else if (form.dataset.form === 'ask') {
+    const q = f.q; form.reset(); await askQuestion(q);
   } else if (form.dataset.form === 'sync') {
     const cfg = { url: f.url, key: f.key };
     if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(cfg.url) && !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(cfg.url)) { toast('URL ต้องขึ้นต้นด้วย https://script.google.com/'); return; }
@@ -1033,7 +1189,7 @@ document.addEventListener('submit', async (ev) => {
   }
 });
 
-window.addEventListener('hashchange', () => { S.viewer = null; setTimeout(checkAlerts, 0); if (route().parts[0] === 'settings') loadPhotoInfo(); if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
+window.addEventListener('hashchange', () => { S.viewer = null; setTimeout(checkAlerts, 0); if (route().parts[0] === 'settings') { loadPhotoInfo(); loadAiStatus(); } if (!route().parts[0] || route().parts[0] !== 'log') S.draftKey = ''; if (route().parts[0] === 'settings') S.draft = {}; S.confirmReset = false; render(); });
 window.addEventListener('online', () => scheduleSync(300));
 window.addEventListener('offline', () => { S.sync = { ...S.sync, status: 'offline' }; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { recompute(); if (route().parts[0] !== 'log') render(); scheduleSync(500); } });
@@ -1045,7 +1201,7 @@ Sync.onSyncChange((st) => {
 });
 
 setInterval(tick, 1000);
-setInterval(() => { if (!['log', 'report', 'settings'].includes(route().parts[0]) && !document.hidden) { recompute(); const y = window.scrollY; render(); window.scrollTo(0, y); } }, 60000);
+setInterval(() => { if (!['log', 'report', 'settings', 'ask'].includes(route().parts[0]) && !document.hidden) { recompute(); const y = window.scrollY; render(); window.scrollTo(0, y); } }, 60000);
 setInterval(() => { if (!document.hidden) scheduleSync(0); }, 120000);
 
 /* ===================== เริ่มทำงาน ===================== */
@@ -1056,6 +1212,10 @@ async function init() {
   S.feedTimer = await db.get('feedTimer');
   S.sleepTimer = await db.get('sleepTimer');
   S.reportNotes = await db.get('reportNotes', '');
+  S.ai.prefs = await AI.prefs();
+  S.ai.trend = await AI.cachedTrend();
+  S.ai.report = await AI.cachedReport();
+  S.ai.history = await db.get('aiAsk', []);
   S.notify = await db.get('notifyPrefs', { enabled: false, sound: true });
   if (S.notify.enabled && 'Notification' in window && Notification.permission !== 'granted') S.notify.enabled = false;
   S.sync = { ...S.sync, pending: await Sync.countPending(), lastAt: await db.get('lastSyncAt') };

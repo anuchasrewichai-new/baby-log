@@ -69,7 +69,7 @@ export function reportData(records, settings, now, nDays) {
   return { sum, from, to, done, worst: worst < 0 ? null : worst, findings, maxT, maxJ, photos };
 }
 
-export function reportHtml({ records, settings, now = Date.now(), nDays = 7, notes = '', photoUrl = () => '' }) {
+export function reportHtml({ records, settings, now = Date.now(), nDays = 7, notes = '', photoUrl = () => '', ai = null }) {
   const rd = reportData(records, settings, now, nDays);
   const s = rd.sum, days = s.days;
   const name = settings.babyName || 'ลูก';
@@ -99,6 +99,9 @@ export function reportHtml({ records, settings, now = Date.now(), nDays = 7, not
   </section>
 
   ${rd.findings.length ? `<section class="rp-sec"><h2>เรื่องที่ควรแจ้งแพทย์</h2><ul class="rp-find">${rd.findings.slice(0, 14).map((f) => `<li class="${lvClass(f.level)}"><span class="rp-lv">${lvText(f.level)}</span><span>${whenText(f.dates)} · ${esc(f.text)}</span></li>`).join('')}</ul></section>` : ''}
+
+  ${ai && ai.res ? `<section class="rp-sec rp-ai"><h2>สรุปโดย AI <span class="rp-muted">(ผู้ปกครองควรตรวจทาน · ไม่ใช่การวินิจฉัย)</span></h2>
+    <p>${esc(ai.res.summary)}</p>${ai.res.forcedNote ? `<p class="rp-ai-note">${esc(ai.res.forcedNote)}</p>` : ''}</section>` : ''}
 
   <section class="rp-sec rp-notes"><h2>คำถาม/ข้อสังเกตของผู้ปกครอง</h2>
     <textarea class="rp-notes-input no-print" data-bind-notes rows="3" placeholder="พิมพ์สิ่งที่อยากถามแพทย์ เช่น ตัวเหลืองที่เหลือต้องเจาะเลือดซ้ำไหม (จะพิมพ์ลงรายงาน)">${esc(notes)}</textarea>

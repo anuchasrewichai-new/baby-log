@@ -47,6 +47,7 @@ class Spreadsheet {
 export function loadGas() {
   const ss = new Spreadsheet();
   const drive = makeDrive();
+  const ai = { calls: [], handler: () => ({ code: 500, body: 'no mock' }) };
   const props = {};
   const ctx = {
     SpreadsheetApp: { getActiveSpreadsheet: () => ss },
@@ -60,6 +61,7 @@ export function loadGas() {
       formatDate: (d, tz, f) => d.toISOString().slice(0, 16).replace('T', '_').replace(':', '')
     },
     Session: { getScriptTimeZone: () => 'Asia/Bangkok' },
+    UrlFetchApp: { fetch: (url, opts) => { ai.calls.push({ url, opts, body: JSON.parse(opts.payload) }); const r = ai.handler(url, JSON.parse(opts.payload), opts); return { getResponseCode: () => r.code || 200, getContentText: () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body)) }; } },
     DriveApp: drive.api,
     ScriptApp: {
       getProjectTriggers: () => drive.triggers,
@@ -72,8 +74,9 @@ export function loadGas() {
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(here, '../apps-script/Code.gs'), 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync(path.join(here, '../apps-script/Ai.gs'), 'utf8'), ctx);
   const post = (body) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).text);
-  return { ctx, ss, props, post, drive };
+  return { ctx, ss, props, post, drive, ai };
 }
 
 function makeDrive() {
