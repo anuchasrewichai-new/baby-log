@@ -12,7 +12,7 @@
  * ข้อมูลอยู่ใน Google Sheet ของคุณเท่านั้น
  */
 
-var API_VERSION = '1.3.0';
+var API_VERSION = '1.3.1';
 var SHEETS = { LOGS: 'Logs', SETTINGS: 'Settings', CONFIG: 'Config', PHOTOS: 'Photos' };
 var PHOTO_COLS = ['PhotoID', 'DriveFileID', 'RecordID', 'Ts', 'Time', 'Bytes', 'Keep', 'CreatedAt', 'Trashed'];
 var PHOTO_FOLDER_NAME = 'Baby Log Photos';

@@ -83,15 +83,36 @@ function aiCall_(config, system, parts, schema) {
   return res;
 }
 
+/** รายชื่อรุ่น Gemini ที่คีย์นี้ใช้ได้จริง (ถามจาก API) เรียงจากใหม่ไปเก่า · รุ่น flash ปกติก่อน lite */
+function geminiModels_(key) {
+  try {
+    var r = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+      muteHttpExceptions: true, headers: { 'x-goog-api-key': key } });
+    if (r.getResponseCode() !== 200) return [];
+    var list = (JSON.parse(r.getContentText()).models || []).filter(function (m) {
+      var n = String(m.name || '');
+      return (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0 &&
+        /gemini-[\d.]+-flash/.test(n) && !/image|tts|audio|live|embed|thinking|exp/.test(n);
+    }).map(function (m) { return String(m.name).replace(/^models\//, ''); });
+    function score(n) {
+      var v = Number((n.match(/gemini-([\d.]+)/) || [0, 0])[1]) || 0;
+      return v * 100 - (/lite/.test(n) ? 10 : 0) - (/preview/.test(n) ? 5 : 0) - (/-\d{3,}$/.test(n) ? 1 : 0);
+    }
+    return list.sort(function (a, b) { return score(b) - score(a); }).slice(0, 4);
+  } catch (e) { return []; }
+}
+
 function callGemini_(config, system, parts, schema) {
   var p = PropertiesService.getScriptProperties();
-  var models = config.model ? [config.model] : uniq_([p.getProperty('AI_MODEL_OK')].concat(GEMINI_MODELS));
+  var ok = p.getProperty('AI_MODEL_OK');
+  var models = config.model ? [config.model] : uniq_([ok].concat(ok ? [] : geminiModels_(config.key)).concat(GEMINI_MODELS));
   var body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: 'user', parts: parts.map(function (x) {
       return x.image ? { inline_data: { mime_type: x.image.mime, data: x.image.data } } : { text: x.text };
     }) }],
-    generationConfig: { responseMimeType: 'application/json', responseJsonSchema: schema }
+    // จำกัดความยาวคำตอบ กัน AI วนซ้ำจนคำขอค้างหลายนาที
+    generationConfig: { responseMimeType: 'application/json', responseJsonSchema: schema, maxOutputTokens: 4096 }
   };
   var lastErr = '';
   for (var i = 0; i < models.length; i++) {
@@ -101,10 +122,14 @@ function callGemini_(config, system, parts, schema) {
       headers: { 'x-goog-api-key': config.key }, payload: JSON.stringify(body)
     });
     var code = r.getResponseCode(), txt = r.getContentText();
-    if (code === 404 || (code === 400 && /not found|is not supported|unknown model/i.test(txt))) { lastErr = 'model ' + m + ' unavailable'; continue; }
+    if (code === 404 || (code === 400 && /not found|is not supported|unknown model|not available/i.test(txt))) {
+      lastErr = 'model ' + m + ' unavailable';
+      if (m === ok) p.deleteProperty('AI_MODEL_OK');
+      continue;
+    }
     if (code === 429) throw new Error('ai_rate_limited');
-    if (code === 401 || code === 403) throw new Error('ai_bad_key');
-    if (code >= 300) throw new Error('ai_http_' + code);
+    if (code === 401 || code === 403 || (code === 400 && /API key/i.test(txt))) throw new Error('ai_bad_key');
+    if (code >= 300) throw new Error('ai_http_' + code + ' ' + m + ': ' + errText_(txt));
     var data = JSON.parse(txt);
     var cand = data.candidates && data.candidates[0];
     if (!cand || !cand.content || !cand.content.parts) throw new Error('ai_blocked');
@@ -113,6 +138,10 @@ function callGemini_(config, system, parts, schema) {
     return { json: parseJson_(out), model: m };
   }
   throw new Error('ai_no_model: ' + lastErr);
+}
+
+function errText_(txt) {
+  try { return String(JSON.parse(txt).error.message).slice(0, 120); } catch (e) { return String(txt).slice(0, 120); }
 }
 
 function callClaude_(config, system, parts, schema) {
@@ -158,7 +187,7 @@ function aiError_(e) {
     ai_bad_json: 'AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง'
   };
   for (var k in map) if (m.indexOf(k) === 0) return { ok: false, error: k, message: map[k] };
-  return { ok: false, error: 'ai_failed', message: 'เรียก AI ไม่สำเร็จ (' + m.slice(0, 80) + ')' };
+  return { ok: false, error: 'ai_failed', message: 'เรียก AI ไม่สำเร็จ (' + m.slice(0, 160) + ')' };
 }
 
 /* ======================= อ่านสีจากรูป ======================= */

@@ -36,7 +36,7 @@ async function call(cfg, body, timeoutMs = 25000) {
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch (e) { throw new Error('เซิร์ฟเวอร์ไม่ได้ตอบเป็น JSON — ตรวจว่า URL เป็นของ Web app และตั้งค่า Who has access: Anyone'); }
-    if (!data.ok) throw new Error(data.error === 'unauthorized' ? 'รหัสครอบครัวไม่ถูกต้อง' : 'เซิร์ฟเวอร์ตอบผิดพลาด: ' + (data.detail || data.error));
+    if (!data.ok) throw new Error(data.error === 'unauthorized' ? 'รหัสครอบครัวไม่ถูกต้อง' : (data.message || ('เซิร์ฟเวอร์ตอบผิดพลาด: ' + (data.detail || data.error))));
     return data;
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('เชื่อมต่อนานเกินไป ลองใหม่อีกครั้ง');

@@ -1,5 +1,5 @@
 // sw.js — แคชตัวแอปให้เปิดได้แม้ออฟไลน์ (ข้อมูลอยู่ใน IndexedDB ไม่ได้อยู่ในแคชนี้)
-const VERSION = 'v1.5.1';
+const VERSION = 'v1.5.2';
 const CACHE = 'baby-log-' + VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
