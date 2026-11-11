@@ -1,0 +1,22 @@
+{
+  "name": "บันทึกลูกน้อย",
+  "short_name": "ลูกน้อย",
+  "description": "บันทึกฉี่ อึ และการให้นมของทารกแรกเกิด พร้อมประเมินว่าปกติหรือควรพบแพทย์",
+  "lang": "th",
+  "start_url": "./#/",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F3EE",
+  "theme_color": "#2F6F73",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "บันทึกฉี่", "url": "./#/log/pee", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "บันทึกอึ", "url": "./#/log/poop", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "บันทึกนม", "url": "./#/log/feed", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

@@ -1,0 +1,1 @@
+{"type":"module","private":true,"scripts":{"test":"TZ=Asia/Bangkok node --test tests/*.test.js"}}
